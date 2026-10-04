@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // دالة للتحقق من تسجيل دخول المستخدم
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // دالة للتحقق من هوية صاحب المستند
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // التحقق من دور المستخدم من جدول المستخدمين
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (getUserRole() == 'admin' || request.auth.token.role == 'admin');
+    }
+    
+    function isEditorialLeadership() {
+      return isAuthenticated() && (
+        getUserRole() in ['admin', 'general_supervisor', 'editor_in_chief', 'advisory_head', 'managing_editor', 'secretary']
+      );
+    }
+    
+    function isEditorOrReviewer() {
+      return isAuthenticated() && (
+        getUserRole() in ['admin', 'general_supervisor', 'editor_in_chief', 'managing_editor', 'secretary', 'executive_editor', 'editor', 'reviewer']
+      );
+    }
+
+    // 1. قواعد مجموعة المستخدمين (Users Collection)
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      // التعديل متاح للمسؤول أو صاحب الحساب لنفسه (لتغيير كلمة المرور والبيانات الشخصية)
+      allow write: if isAdmin() || isOwner(userId);
+    }
+
+    // 2. قواعد الأبحاث والمخطوطات (Manuscripts Collection)
+    match /manuscripts/{manuscriptId} {
+      // القراءة متاحة للقيادة التحريرية، وللمحكم المكلف، وللمؤلف صاحب البحث
+      allow read: if isEditorialLeadership() || 
+                     (isAuthenticated() && (resource.data.authorId == request.auth.uid || resource.data.correspondAuthorEmail == request.auth.token.email));
+      
+      // إنشاء بحث جديد متاح للباحث المسجل أو هيئة التحرير
+      allow create: if isAuthenticated();
+      
+      // التعديل متاح لهيئة التحرير أو الإدارة
+      allow update: if isEditorialLeadership() || 
+                       (isAuthenticated() && resource.data.authorId == request.auth.uid && resource.data.status in ['Submitting', 'Minor Revision Requested', 'Major Revision Requested']);
+      
+      // الحذف مقتصر على المشرف العام أو رئيس التحرير أو الأدمن
+      allow delete: if isAdmin() || (getUserRole() in ['general_supervisor', 'editor_in_chief']);
+    }
+
+    // 3. قواعد مراجعات التحكيم العلمي (Reviews Collection)
+    match /reviews/{reviewId} {
+      allow read: if isEditorialLeadership() || (isAuthenticated() && resource.data.reviewerId == request.auth.uid);
+      allow create: if isEditorialLeadership();
+      allow update: if isEditorialLeadership() || (isAuthenticated() && resource.data.reviewerId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // 4. قواعد المعاملات المالية (Financial Transactions)
+    match /financial_transactions/{txId} {
+      allow read: if isEditorialLeadership();
+      allow write: if isEditorialLeadership();
+    }
+
+    // 5. قواعد شهادات القبول وخطابات النشر (Certificates)
+    match /certificates/{certId} {
+      allow read: if true; // عام للتحقق من صحة الشهادة والباركود
+      allow write: if isEditorialLeadership();
+    }
+
+    // 6. قواعد سجل النشاطات (Activity Logs)
+    match /activity_logs/{logId} {
+      allow read: if isEditorialLeadership();
+      allow create: if isAuthenticated();
+      allow update, delete: if false; // سجل التدقيق غير قابل للتعديل أو المسح لضمان النزاهة
+    }
+  }
+}

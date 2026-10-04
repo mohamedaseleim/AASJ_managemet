@@ -1,0 +1,6 @@
+{
+  "name": "AASJ - مجلة أرشيف العلوم الزراعية | Archives of Agriculture Sciences Journal",
+  "description": "منظومة متكاملة لإدارة وهيئة تحرير مجلة أرشيف العلوم الزراعية (AASJ) - كلية الزراعة (فرع أسيوط)، جامعة الأزهر، مصر - بنك المعرفة المصري (EKB). تتبع المخطوطات، التحكيم، قوائم الانتظار، التدفق المالي، والوثائق.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

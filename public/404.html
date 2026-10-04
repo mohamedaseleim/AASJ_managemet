@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>مجلة أرشيف العلوم الزراعية | AASJ</title>
+    <script>
+      // Single Page Application (SPA) redirect helper for GitHub Pages
+      // Ensures deep links or refreshes redirect cleanly back to root with original path preserved
+      (function () {
+        var path = window.location.pathname;
+        var search = window.location.search;
+        var hash = window.location.hash;
+        // Detect repo name in path if hosted under https://<username>.github.io/<repo>/
+        var segments = path.split('/').filter(Boolean);
+        var repoBase = segments.length > 0 ? '/' + segments[0] + '/' : '/';
+        // If not at root, redirect to base
+        window.location.replace(repoBase + (search ? search : '') + (hash ? hash : ''));
+      })();
+    </script>
+  </head>
+  <body style="font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 40px; background: #f8fafc; color: #064e3b;">
+    <h2>جاري تحويلك إلى منظومة مجلة أرشيف العلوم الزراعية...</h2>
+    <p style="color: #64748b;">Redirecting to Archives of Agriculture Sciences Journal Portal...</p>
+    <a href="./" style="color: #047857; font-weight: bold; text-decoration: underline;">اضغط هنا إذا لم يتم التحويل تلقائياً</a>
+  </body>
+</html>
