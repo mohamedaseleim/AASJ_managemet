@@ -1,338 +1,344 @@
-export interface DriveItem {
-  id: string;
-  name: string;
-  mimeType: string;
-  size?: string;
-  webViewLink?: string;
-  webContentLink?: string;
-  iconLink?: string;
-  createdTime?: string;
-  modifiedTime?: string;
-  parents?: string[];
-  isFolder: boolean;
-}
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { User } from 'firebase/auth';
+import {
+  googleSignIn,
+  initAuth,
+  logoutGoogle,
+  setCachedAccessToken,
+} from '../services/googleDriveAuth';
+import {
+  DriveItem,
+  FolderStructureStatus,
+  GoogleDriveService,
+} from '../services/googleDriveService';
+import { useJournal } from './JournalContext';
 
-export interface FolderStructureStatus {
-  rootFolderId: string | null;
-  manuscriptsFolderId: string | null;
-  documentsFolderId: string | null;
-  financeFolderId: string | null;
-  sectionsFolderId: string | null;
-  backupsFolderId: string | null;
-  subSectionFolders: Record<string, string>;
-  isConfigured: boolean;
-}
-
-const FOLDER_MIME = 'application/vnd.google-apps.folder';
-
-export class GoogleDriveService {
-  /**
-   * Helper to make authenticated requests to Google Drive v3 API
-   */
-  private static async fetchWithAuth(url: string, token: string, options: RequestInit = {}) {
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...options.headers,
-      },
-    });
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      let errorMessage = `خطأ في Google Drive (${res.status})`;
-      try {
-        const errorJson = JSON.parse(errorText);
-        if (errorJson.error?.message) {
-          errorMessage = errorJson.error.message;
-        }
-      } catch (e) {
-        // use default
-      }
-      throw new Error(errorMessage);
-    }
-
-    if (res.status === 204) {
-      return null;
-    }
-
-    return await res.json();
-  }
-
-  /**
-   * List files and folders inside a specific parent folder or root
-   */
-  static async listFiles(
-    token: string,
-    folderId?: string,
-    queryText?: string
-  ): Promise<DriveItem[]> {
-    let q = 'trashed = false';
-
-    if (folderId) {
-      q += ` and '${folderId}' in parents`;
-    }
-
-    if (queryText && queryText.trim()) {
-      const sanitized = queryText.replace(/'/g, "\\'");
-      q += ` and name contains '${sanitized}'`;
-    }
-
-    const fields =
-      'files(id, name, mimeType, size, webViewLink, webContentLink, iconLink, createdTime, modifiedTime, parents)';
-    const orderBy = 'folder, name';
-
-    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-      q
-    )}&fields=${encodeURIComponent(fields)}&orderBy=${encodeURIComponent(
-      orderBy
-    )}&pageSize=100`;
-
-    const data = await this.fetchWithAuth(url, token);
-    const files = data.files || [];
-
-    return files.map((f: any) => ({
-      ...f,
-      isFolder: f.mimeType === FOLDER_MIME,
-    }));
-  }
-
-  /**
-   * Find an existing folder by name and parent
-   */
-  static async findFolder(
-    token: string,
-    name: string,
-    parentId?: string
-  ): Promise<DriveItem | null> {
-    let q = `mimeType = '${FOLDER_MIME}' and name = '${name.replace(/'/g, "\\'")}' and trashed = false`;
-    if (parentId) {
-      q += ` and '${parentId}' in parents`;
-    }
-
-    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-      q
-    )}&fields=files(id, name, mimeType, webViewLink)`;
-
-    const data = await this.fetchWithAuth(url, token);
-    if (data.files && data.files.length > 0) {
-      return {
-        ...data.files[0],
-        isFolder: true,
-      };
-    }
-    return null;
-  }
-
-  /**
-   * Create a new folder
-   */
-  static async createFolder(
-    token: string,
-    name: string,
-    parentId?: string
-  ): Promise<DriveItem> {
-    // Check if already exists first to avoid duplicates
-    const existing = await this.findFolder(token, name, parentId);
-    if (existing) {
-      return existing;
-    }
-
-    const body: any = {
-      name,
-      mimeType: FOLDER_MIME,
-    };
-
-    if (parentId) {
-      body.parents = [parentId];
-    }
-
-    const data = await this.fetchWithAuth('https://www.googleapis.com/drive/v3/files', token, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    return {
-      ...data,
-      isFolder: true,
-    };
-  }
-
-  /**
-   * Upload a raw file (PDF, Word, Image, JSON) to Google Drive using multipart upload
-   */
-  static async uploadFile(
-    token: string,
+interface GoogleDriveContextType {
+  isGoogleConnected: boolean;
+  googleUser: User | null;
+  accessToken: string | null;
+  isAuthenticating: boolean;
+  folderStructure: FolderStructureStatus | null;
+  isSettingUpFolders: boolean;
+  setupProgress: string;
+  connectGoogleDrive: () => Promise<string | null>;
+  disconnectGoogleDrive: () => Promise<void>;
+  setupJournalFolders: () => Promise<FolderStructureStatus | null>;
+  uploadFileToDrive: (
     file: File | Blob,
     filename: string,
-    parentId?: string,
+    targetFolderId?: string,
     mimeType?: string
-  ): Promise<DriveItem> {
-    const finalMime = mimeType || (file as File).type || 'application/octet-stream';
-    const metadata: any = {
-      name: filename,
-      mimeType: finalMime,
-    };
+  ) => Promise<DriveItem>;
+  uploadBackupToDrive: (
+    jsonContent: string,
+    filename?: string
+  ) => Promise<DriveItem>;
+}
 
-    if (parentId) {
-      metadata.parents = [parentId];
+const GDRIVE_STORAGE_KEY = 'AASJ_GDRIVE_STRUCTURE_V1';
+
+const GoogleDriveContext = createContext<GoogleDriveContextType | undefined>(undefined);
+
+export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [isSettingUpFolders, setIsSettingUpFolders] = useState(false);
+  const [setupProgress, setSetupProgress] = useState('');
+
+  const { addActivityLog } = useJournal();
+
+  const [folderStructure, setFolderStructure] = useState<FolderStructureStatus | null>(() => {
+    try {
+      const stored = localStorage.getItem(GDRIVE_STORAGE_KEY);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error('Error loading stored Google Drive folder structure', e);
     }
+    return null;
+  });
 
-    const boundary = '-------314159265358979323846';
-    const delimiter = `\r\n--${boundary}\r\n`;
-    const closeDelimiter = `\r\n--${boundary}--`;
+  // Listen to Firebase Auth state on mount
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (user, token) => {
+        // Keep google user connected after refresh/browser restart
+        setGoogleUser(user);
 
-    const fileBuffer = await file.arrayBuffer();
-    const metadataPart = `${delimiter}Content-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(
-      metadata
-    )}\r\n`;
-    const fileHeaderPart = `${delimiter}Content-Type: ${finalMime}\r\n\r\n`;
-
-    const blob = new Blob(
-      [
-        metadataPart,
-        fileHeaderPart,
-        new Uint8Array(fileBuffer),
-        closeDelimiter,
-      ],
-      { type: `multipart/related; boundary=${boundary}` }
-    );
-
-    const res = await fetch(
-      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,size,webViewLink,webContentLink,createdTime',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': `multipart/related; boundary=${boundary}`,
-        },
-        body: blob,
+        // Token may be null after refresh (in-memory token lost), so we keep user and refresh on demand
+        setAccessToken(token || null);
+        setCachedAccessToken(token || null);
+      },
+      () => {
+        // Do NOT force-disconnect googleUser here; keep account session and refresh token when needed
+        setAccessToken(null);
+        setCachedAccessToken(null);
       }
     );
 
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`فشل رفع الملف إلى Google Drive: ${err}`);
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const connectGoogleDrive = async (): Promise<string | null> => {
+    setIsAuthenticating(true);
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        setGoogleUser(result.user);
+        setAccessToken(result.accessToken);
+        setCachedAccessToken(result.accessToken);
+
+        addActivityLog({
+          actionType: 'google_drive_folder',
+          title: 'ربط Google Drive بالحساب',
+          description: `تم تسجيل الدخول إلى Google Drive بواسطة ${result.user.displayName || result.user.email || 'مستخدم Google'}`,
+          targetId: result.user.uid,
+          severity: 'success',
+        });
+
+        return result.accessToken;
+      }
+
+      addActivityLog({
+        actionType: 'google_drive_folder',
+        title: 'إلغاء ربط Google Drive',
+        description: 'تم إغلاق نافذة تسجيل الدخول إلى Google Drive قبل الإكمال',
+        severity: 'warning',
+      });
+
+      return null;
+    } catch (err: any) {
+      if (
+        err?.code === 'auth/popup-closed-by-user' ||
+        err?.code === 'auth/cancelled-popup-request' ||
+        err?.message?.includes('popup-closed-by-user')
+      ) {
+        console.info('Google Drive sign-in cancelled by user.');
+
+        addActivityLog({
+          actionType: 'google_drive_folder',
+          title: 'إلغاء تسجيل الدخول إلى Google Drive',
+          description: 'المستخدم أغلق نافذة تسجيل الدخول قبل الإكمال',
+          severity: 'warning',
+        });
+
+        return null;
+      }
+
+      console.warn('Could not connect to Google Drive:', err?.message || err);
+
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: 'فشل ربط Google Drive',
+        description: `تعذر الاتصال بـ Google Drive: ${err?.message || 'خطأ غير معروف'}`,
+        severity: 'danger',
+      });
+
+      return null;
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const disconnectGoogleDrive = async () => {
+    try {
+      await logoutGoogle();
+      setGoogleUser(null);
+      setAccessToken(null);
+      setCachedAccessToken(null);
+
+      addActivityLog({
+        actionType: 'google_drive_folder',
+        title: 'فصل Google Drive',
+        description: 'تم تسجيل الخروج من Google Drive وفصل الاتصال',
+        severity: 'info',
+      });
+    } catch (err: any) {
+      console.error('Failed to disconnect Google Drive', err);
+
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: 'فشل فصل Google Drive',
+        description: `تعذر فصل Google Drive: ${err?.message || 'خطأ غير معروف'}`,
+        severity: 'danger',
+      });
+    }
+  };
+
+  const setupJournalFolders = async (): Promise<FolderStructureStatus | null> => {
+    let currentToken = accessToken;
+    if (!currentToken) {
+      currentToken = await connectGoogleDrive();
+      if (!currentToken) return null;
     }
 
-    const data = await res.json();
-    return {
-      ...data,
-      isFolder: false,
-    };
-  }
+    setIsSettingUpFolders(true);
+    setSetupProgress('بدء تهيئة الهيكل التنظيمي للمجلدات...');
 
-  /**
-   * Upload text or JSON directly (useful for backup files or metadata reports)
-   */
-  static async uploadTextContent(
-    token: string,
+    try {
+      const structure = await GoogleDriveService.setupJournalFolderStructure(
+        currentToken,
+        (step) => setSetupProgress(step)
+      );
+
+      setFolderStructure(structure);
+      try {
+        localStorage.setItem(GDRIVE_STORAGE_KEY, JSON.stringify(structure));
+      } catch (e) {
+        console.error('Failed to persist folder structure', e);
+      }
+
+      setSetupProgress('تم إنشاء وتنظيم كافة المجلدات بنجاح!');
+
+      addActivityLog({
+        actionType: 'google_drive_folder',
+        title: 'تهيئة هيكل مجلدات Google Drive',
+        description: 'تم إنشاء/التحقق من المجلدات التنظيمية للمجلة بنجاح',
+        targetId: structure.rootFolderId || undefined,
+        severity: 'success',
+      });
+
+      return structure;
+    } catch (err: any) {
+      console.warn('Notice while setting up journal folders in Google Drive:', err?.message || err);
+      setSetupProgress(`تعذر إكمال إنشاء المجلدات: ${err?.message || 'خطأ في الاتصال'}`);
+
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: 'فشل تهيئة مجلدات Google Drive',
+        description: `تعذر إنشاء الهيكل التنظيمي للمجلدات: ${err?.message || 'خطأ في الاتصال'}`,
+        severity: 'danger',
+      });
+
+      return null;
+    } finally {
+      setIsSettingUpFolders(false);
+    }
+  };
+
+  const uploadFileToDrive = async (
+    file: File | Blob,
     filename: string,
-    content: string,
-    parentId?: string,
-    mimeType: string = 'application/json'
-  ): Promise<DriveItem> {
-    const blob = new Blob([content], { type: mimeType });
-    return this.uploadFile(token, blob, filename, parentId, mimeType);
-  }
-
-  /**
-   * Delete a file or folder from Google Drive
-   * (Caller MUST obtain explicit user confirmation before executing)
-   */
-  static async deleteFile(token: string, fileId: string): Promise<boolean> {
-    await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}`, token, {
-      method: 'DELETE',
-    });
-    return true;
-  }
-
-  /**
-   * Automatically bootstrap the AASJ scholarly folder hierarchy in Google Drive
-   */
-  static async setupJournalFolderStructure(
-    token: string,
-    onProgress?: (step: string) => void
-  ): Promise<FolderStructureStatus> {
-    const report = (msg: string) => {
-      if (onProgress) onProgress(msg);
-    };
-
-    report('إنشاء وتأكيد المجلد الرئيسي للمجلة...');
-    // 1. Root folder
-    const root = await this.createFolder(
-      token,
-      'AASJ - مجلة أرشيف العلوم الزراعية (جامعة الأزهر)'
-    );
-
-    // 2. Main functional subfolders
-    report('إنشاء مجلد المخطوطات والأبحاث...');
-    const manuscriptsFolder = await this.createFolder(
-      token,
-      '1. المخطوطات والأبحاث (Manuscripts)',
-      root.id
-    );
-
-    report('إنشاء مجلد الوثائق والأرشيف الرسمي...');
-    const documentsFolder = await this.createFolder(
-      token,
-      '2. الوثائق والأرشيف الرسمي (Documents & Letters)',
-      root.id
-    );
-
-    report('إنشاء مجلد الشؤون المالية وسندات القبض...');
-    const financeFolder = await this.createFolder(
-      token,
-      '3. الشؤون المالية وإيصالات الرسوم (Finance & Vouchers)',
-      root.id
-    );
-
-    report('إنشاء مجلد أجزاء وتخصصات المجلة السبعة...');
-    const sectionsFolder = await this.createFolder(
-      token,
-      '4. أجزاء وتخصصات المجلة السبعة (7 Sections)',
-      root.id
-    );
-
-    report('إنشاء مجلد النسخ الاحتياطية وقاعدة البيانات...');
-    const backupsFolder = await this.createFolder(
-      token,
-      '5. النسخ الاحتياطية للنظام (System Backups)',
-      root.id
-    );
-
-    // 3. Create subfolders for the 7 academic sections inside Sections folder
-    const sectionNames = [
-      'الجزء 1 - الاقتصاد الزراعي وعلم الاجتماع والإرشاد',
-      'الجزء 2 - الإنتاج النباتي والمحاصيل والبساتين',
-      'الجزء 3 - أمراض النبات ووقاية المزروعات',
-      'الجزء 4 - الإنتاج الحيواني والداجني والأسماك',
-      'الجزء 5 - علوم وتكنولوجيا الألبان والأغذية',
-      'الجزء 6 - علوم الأراضي والمياه والهندسة الزراعية',
-      'الجزء 7 - الكيمياء والميكروبيولوجيا الزراعية والوراثة',
-    ];
-
-    const subSectionFolders: Record<string, string> = {};
-    for (const sName of sectionNames) {
-      report(`تهيئة ${sName}...`);
-      const secSub = await this.createFolder(token, sName, sectionsFolder.id);
-      subSectionFolders[sName] = secSub.id;
+    targetFolderId?: string,
+    mimeType?: string
+  ): Promise<DriveItem> => {
+    let currentToken = accessToken;
+    if (!currentToken) {
+      currentToken = await connectGoogleDrive();
+      if (!currentToken) {
+        throw new Error('يرجى تسجيل الدخول إلى Google Drive أولاً للمتابعة');
+      }
     }
 
-    report('اكتمل تجهيز الهيكل التنظيمي لمجلدات Google Drive بنجاح!');
+    const parentId = targetFolderId || folderStructure?.rootFolderId || undefined;
 
-    return {
-      rootFolderId: root.id,
-      manuscriptsFolderId: manuscriptsFolder.id,
-      documentsFolderId: documentsFolder.id,
-      financeFolderId: financeFolder.id,
-      sectionsFolderId: sectionsFolder.id,
-      backupsFolderId: backupsFolder.id,
-      subSectionFolders,
-      isConfigured: true,
-    };
+    try {
+      const uploaded = await GoogleDriveService.uploadFile(
+        currentToken,
+        file,
+        filename,
+        parentId,
+        mimeType
+      );
+
+      addActivityLog({
+        actionType: 'google_drive_upload',
+        title: `رفع ملف إلى Google Drive: ${filename}`,
+        description: `تم رفع الملف بنجاح إلى ${parentId ? `المجلد (${parentId})` : 'الجذر'}`,
+        targetId: uploaded.id,
+        severity: 'success',
+      });
+
+      return uploaded;
+    } catch (err: any) {
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: `فشل رفع ملف إلى Google Drive: ${filename}`,
+        description: `حدث خطأ أثناء رفع الملف: ${err?.message || 'خطأ غير معروف'}`,
+        targetId: parentId,
+        severity: 'danger',
+      });
+      throw err;
+    }
+  };
+
+  const uploadBackupToDrive = async (
+    jsonContent: string,
+    filename?: string
+  ): Promise<DriveItem> => {
+    let currentToken = accessToken;
+    if (!currentToken) {
+      currentToken = await connectGoogleDrive();
+      if (!currentToken) {
+        throw new Error('يرجى تسجيل الدخول إلى Google Drive أولاً للمتابعة');
+      }
+    }
+
+    const defaultFilename =
+      filename || `AASJ_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+    const parentId = folderStructure?.backupsFolderId || folderStructure?.rootFolderId || undefined;
+
+    try {
+      const uploaded = await GoogleDriveService.uploadTextContent(
+        currentToken,
+        defaultFilename,
+        jsonContent,
+        parentId,
+        'application/json'
+      );
+
+      addActivityLog({
+        actionType: 'system_backup',
+        title: `رفع نسخة احتياطية إلى Google Drive: ${defaultFilename}`,
+        description: 'تم رفع نسخة JSON احتياطية بنجاح إلى Google Drive',
+        targetId: uploaded.id,
+        severity: 'success',
+      });
+
+      return uploaded;
+    } catch (err: any) {
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: `فشل رفع النسخة الاحتياطية: ${defaultFilename}`,
+        description: `تعذر رفع النسخة الاحتياطية: ${err?.message || 'خطأ غير معروف'}`,
+        targetId: parentId,
+        severity: 'danger',
+      });
+      throw err;
+    }
+  };
+
+  return (
+    <GoogleDriveContext.Provider
+      value={{
+        isGoogleConnected: !!googleUser, // connected as long as Firebase user session exists
+        googleUser,
+        accessToken,
+        isAuthenticating,
+        folderStructure,
+        isSettingUpFolders,
+        setupProgress,
+        connectGoogleDrive,
+        disconnectGoogleDrive,
+        setupJournalFolders,
+        uploadFileToDrive,
+        uploadBackupToDrive,
+      }}
+    >
+      {children}
+    </GoogleDriveContext.Provider>
+  );
+};
+
+export const useGoogleDrive = () => {
+  const context = useContext(GoogleDriveContext);
+  if (!context) {
+    throw new Error('useGoogleDrive must be used within a GoogleDriveProvider');
   }
-}
+  return context;
+};
