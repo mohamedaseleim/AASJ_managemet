@@ -60,6 +60,10 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     cachedAccessToken = credential.accessToken;
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
+    console.error('Google Sign In Error Code:', error?.code);
+    console.error('Google Sign In Error Message:', error?.message);
+    console.error('Google Sign In Full Error:', error);
+
     if (
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request' ||
@@ -69,8 +73,9 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       console.info('Google sign-in popup was closed by the user.');
       return null;
     }
-    console.warn('Google Sign In notice:', error?.message || error);
-    return null;
+
+    // Re-throw non-cancellation errors to make root cause visible upstream during diagnostics
+    throw error;
   } finally {
     isSigningIn = false;
   }
