@@ -11,6 +11,7 @@ import {
   FolderStructureStatus,
   GoogleDriveService,
 } from '../services/googleDriveService';
+import { useJournal } from './JournalContext';
 
 interface GoogleDriveContextType {
   isGoogleConnected: boolean;
@@ -45,6 +46,8 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isSettingUpFolders, setIsSettingUpFolders] = useState(false);
   const [setupProgress, setSetupProgress] = useState('');
+
+  const { addActivityLog } = useJournal();
 
   const [folderStructure, setFolderStructure] = useState<FolderStructureStatus | null>(() => {
     try {
@@ -86,8 +89,25 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setGoogleUser(result.user);
         setAccessToken(result.accessToken);
         setCachedAccessToken(result.accessToken);
+
+        addActivityLog({
+          actionType: 'google_drive_folder',
+          title: 'ربط Google Drive بالحساب',
+          description: `تم تسجيل الدخول إلى Google Drive بواسطة ${result.user.displayName || result.user.email || 'مستخدم Google'}`,
+          targetId: result.user.uid,
+          severity: 'success',
+        });
+
         return result.accessToken;
       }
+
+      addActivityLog({
+        actionType: 'google_drive_folder',
+        title: 'إلغاء ربط Google Drive',
+        description: 'تم إغلاق نافذة تسجيل الدخول إلى Google Drive قبل الإكمال',
+        severity: 'warning',
+      });
+
       return null;
     } catch (err: any) {
       if (
@@ -96,9 +116,26 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
         err?.message?.includes('popup-closed-by-user')
       ) {
         console.info('Google Drive sign-in cancelled by user.');
+
+        addActivityLog({
+          actionType: 'google_drive_folder',
+          title: 'إلغاء تسجيل الدخول إلى Google Drive',
+          description: 'المستخدم أغلق نافذة تسجيل الدخول قبل الإكمال',
+          severity: 'warning',
+        });
+
         return null;
       }
+
       console.warn('Could not connect to Google Drive:', err?.message || err);
+
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: 'فشل ربط Google Drive',
+        description: `تعذر الاتصال بـ Google Drive: ${err?.message || 'خطأ غير معروف'}`,
+        severity: 'danger',
+      });
+
       return null;
     } finally {
       setIsAuthenticating(false);
@@ -111,8 +148,22 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setGoogleUser(null);
       setAccessToken(null);
       setCachedAccessToken(null);
-    } catch (err) {
+
+      addActivityLog({
+        actionType: 'google_drive_folder',
+        title: 'فصل Google Drive',
+        description: 'تم تسجيل الخروج من Google Drive وفصل الاتصال',
+        severity: 'info',
+      });
+    } catch (err: any) {
       console.error('Failed to disconnect Google Drive', err);
+
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: 'فشل فصل Google Drive',
+        description: `تعذر فصل Google Drive: ${err?.message || 'خطأ غير معروف'}`,
+        severity: 'danger',
+      });
     }
   };
 
@@ -140,10 +191,27 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
 
       setSetupProgress('تم إنشاء وتنظيم كافة المجلدات بنجاح!');
+
+      addActivityLog({
+        actionType: 'google_drive_folder',
+        title: 'تهيئة هيكل مجلدات Google Drive',
+        description: 'تم إنشاء/التحقق من المجلدات التنظيمية للمجلة بنجاح',
+        targetId: structure.rootFolderId || undefined,
+        severity: 'success',
+      });
+
       return structure;
     } catch (err: any) {
       console.warn('Notice while setting up journal folders in Google Drive:', err?.message || err);
       setSetupProgress(`تعذر إكمال إنشاء المجلدات: ${err?.message || 'خطأ في الاتصال'}`);
+
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: 'فشل تهيئة مجلدات Google Drive',
+        description: `تعذر إنشاء الهيكل التنظيمي للمجلدات: ${err?.message || 'خطأ في الاتصال'}`,
+        severity: 'danger',
+      });
+
       return null;
     } finally {
       setIsSettingUpFolders(false);
@@ -164,9 +232,36 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
     }
 
-    // Default to root folder if no specific folder provided
     const parentId = targetFolderId || folderStructure?.rootFolderId || undefined;
-    return await GoogleDriveService.uploadFile(currentToken, file, filename, parentId, mimeType);
+
+    try {
+      const uploaded = await GoogleDriveService.uploadFile(
+        currentToken,
+        file,
+        filename,
+        parentId,
+        mimeType
+      );
+
+      addActivityLog({
+        actionType: 'google_drive_upload',
+        title: `رفع ملف إلى Google Drive: ${filename}`,
+        description: `تم رفع الملف بنجاح إلى ${parentId ? `المجلد (${parentId})` : 'الجذر'}`,
+        targetId: uploaded.id,
+        severity: 'success',
+      });
+
+      return uploaded;
+    } catch (err: any) {
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: `فشل رفع ملف إلى Google Drive: ${filename}`,
+        description: `حدث خطأ أثناء رفع الملف: ${err?.message || 'خطأ غير معروف'}`,
+        targetId: parentId,
+        severity: 'danger',
+      });
+      throw err;
+    }
   };
 
   const uploadBackupToDrive = async (
@@ -185,13 +280,34 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
       filename || `AASJ_Backup_${new Date().toISOString().slice(0, 10)}.json`;
     const parentId = folderStructure?.backupsFolderId || folderStructure?.rootFolderId || undefined;
 
-    return await GoogleDriveService.uploadTextContent(
-      currentToken,
-      defaultFilename,
-      jsonContent,
-      parentId,
-      'application/json'
-    );
+    try {
+      const uploaded = await GoogleDriveService.uploadTextContent(
+        currentToken,
+        defaultFilename,
+        jsonContent,
+        parentId,
+        'application/json'
+      );
+
+      addActivityLog({
+        actionType: 'system_backup',
+        title: `رفع نسخة احتياطية إلى Google Drive: ${defaultFilename}`,
+        description: 'تم رفع نسخة JSON احتياطية بنجاح إلى Google Drive',
+        targetId: uploaded.id,
+        severity: 'success',
+      });
+
+      return uploaded;
+    } catch (err: any) {
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: `فشل رفع النسخة الاحتياطية: ${defaultFilename}`,
+        description: `تعذر رفع النسخة الاحتياطية: ${err?.message || 'خطأ غير معروف'}`,
+        targetId: parentId,
+        severity: 'danger',
+      });
+      throw err;
+    }
   };
 
   return (
