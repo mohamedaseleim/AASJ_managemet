@@ -9,6 +9,7 @@ import {
 } from '../data/initialData';
 import { INITIAL_ACTIVITY_LOGS } from '../data/initialActivityLogs';
 import { Language } from '../translations';
+import { useAuth } from './AuthContext';
 import {
   ActiveModule,
   ActivityLogItem,
@@ -20,7 +21,14 @@ import {
   ReviewerAssignment,
   ReviewerProfile,
   WaitingListItem,
+  UserRole,
 } from '../types/journal';
+
+type NewLog = Omit<
+  ActivityLogItem,
+  'id' | 'timestamp' | 'username' | 'userFullName' | 'userRole'
+> &
+  Partial<Pick<ActivityLogItem, 'username' | 'userFullName' | 'userRole'>>;
 
 interface JournalContextType {
   language: Language;
@@ -30,7 +38,6 @@ interface JournalContextType {
   globalSearch: string;
   setGlobalSearch: (q: string) => void;
 
-  // Manuscripts
   manuscripts: Manuscript[];
   addManuscript: (m: Omit<Manuscript, 'createdAt' | 'updatedAt'>) => void;
   updateManuscript: (id: string, m: Partial<Manuscript>) => void;
@@ -42,42 +49,35 @@ interface JournalContextType {
     reviewer: ReviewerAssignment
   ) => void;
 
-  // Waiting list
   waitingList: WaitingListItem[];
   addWaitingItem: (item: Omit<WaitingListItem, 'id' | 'addedDate'>) => void;
   updateWaitingItem: (id: string, item: Partial<WaitingListItem>) => void;
   deleteWaitingItem: (id: string) => void;
 
-  // Donations / APC
   donations: DonationRecord[];
   addDonation: (d: Omit<DonationRecord, 'id'>) => void;
   updateDonation: (id: string, d: Partial<DonationRecord>) => void;
   deleteDonation: (id: string) => void;
 
-  // Documents
   documents: DocumentArchiveItem[];
   addDocument: (doc: Omit<DocumentArchiveItem, 'id' | 'createdAt'>) => void;
   updateDocument: (id: string, doc: Partial<DocumentArchiveItem>) => void;
   deleteDocument: (id: string) => void;
 
-  // Reviewers
   reviewers: ReviewerProfile[];
   addReviewer: (r: Omit<ReviewerProfile, 'id'>) => void;
   updateReviewer: (id: string, r: Partial<ReviewerProfile>) => void;
   deleteReviewer: (id: string) => void;
 
-  // Cash flow
   cashFlow: CashFlowTransaction[];
   addCashTransaction: (tx: CashFlowTransaction) => void;
   updateCashTransaction: (id: string, tx: Partial<CashFlowTransaction>) => void;
   deleteCashTransaction: (id: string) => void;
 
-  // Activity / Audit Logs (Admin only)
   activityLogs: ActivityLogItem[];
-  addActivityLog: (log: Omit<ActivityLogItem, 'id' | 'timestamp'>) => void;
+  addActivityLog: (log: NewLog) => void;
   clearActivityLogs: () => void;
 
-  // Utilities
   resetToDefaultData: () => void;
   exportDatabaseJson: () => void;
   importDatabaseJson: (jsonString: string) => boolean;
@@ -90,12 +90,20 @@ const LANG_STORAGE_KEY = 'AASJ_JOURNAL_LANG_V2';
 const ACTIVITY_LOGS_KEY = 'AASJ_ACTIVITY_LOGS_ALAZHAR_V2';
 
 export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { currentUser } = useAuth();
+
   const [language, setLanguageState] = useState<Language>(() => {
     return (localStorage.getItem(LANG_STORAGE_KEY) as Language) || 'ar';
   });
 
   const [activeModule, setActiveModule] = useState<ActiveModule>('dashboard');
   const [globalSearch, setGlobalSearch] = useState<string>('');
+
+  const actor = () => ({
+    username: currentUser?.username ?? 'anonymous',
+    userFullName: currentUser?.fullName ?? 'غير معروف',
+    userRole: (currentUser?.role ?? 'author') as UserRole,
+  });
 
   const [manuscripts, setManuscripts] = useState<Manuscript[]>(() => {
     try {
@@ -189,16 +197,14 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() => {
     try {
-      // 1) V2 first
       const v2Stored = localStorage.getItem(ACTIVITY_LOGS_KEY);
       if (v2Stored !== null) {
         const parsed = JSON.parse(v2Stored);
         if (Array.isArray(parsed)) {
-          return parsed; // even if []
+          return parsed;
         }
       }
 
-      // 2) Optional migration from V1
       const v1Stored = localStorage.getItem('AASJ_ACTIVITY_LOGS_ALAZHAR_V1');
       if (v1Stored !== null) {
         const parsedV1 = JSON.parse(v1Stored);
@@ -211,7 +217,6 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.error('Error loading stored activity logs', e);
     }
 
-    // first run only
     return import.meta.env.DEV ? INITIAL_ACTIVITY_LOGS : [];
   });
 
@@ -223,20 +228,36 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [activityLogs]);
 
-  const addActivityLog = (log: Omit<ActivityLogItem, 'id' | 'timestamp'>) => {
+  const addActivityLog = (log: NewLog) => {
+    const who = actor();
     const newLog: ActivityLogItem = {
       ...log,
-      id: `LOG-${Date.now().toString().slice(-6)}`,
+      username: log.username ?? who.username,
+      userFullName: log.userFullName ?? who.userFullName,
+      userRole: log.userRole ?? who.userRole,
+      id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       timestamp: new Date().toISOString(),
     };
     setActivityLogs((prev) => [newLog, ...prev]);
   };
 
   const clearActivityLogs = () => {
-    setActivityLogs([]);
+    const who = actor();
+    setActivityLogs([
+      {
+        id: `LOG-${Date.now()}-CLR`,
+        timestamp: new Date().toISOString(),
+        username: who.username,
+        userFullName: who.userFullName,
+        userRole: who.userRole,
+        actionType: 'system_backup',
+        title: 'مسح سجل النشاطات بالكامل',
+        description: `قام ${who.userFullName} (@${who.username}) بمسح جميع سجلات النشاط السابقة`,
+        severity: 'danger',
+      },
+    ]);
   };
 
-  // Sync language with document direction
   const setLanguage = (lang: Language) => {
     setLanguageState(lang);
     localStorage.setItem(LANG_STORAGE_KEY, lang);
@@ -249,7 +270,6 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     document.documentElement.lang = language;
   }, [language]);
 
-  // Persist to LocalStorage on state changes
   useEffect(() => {
     try {
       const payload = {
@@ -267,7 +287,6 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [manuscripts, waitingList, donations, documents, reviewers, cashFlow]);
 
-  // Manuscripts CRUD
   const addManuscript = (m: Omit<Manuscript, 'createdAt' | 'updatedAt'>) => {
     const now = new Date().toISOString();
     const newManuscript: Manuscript = {
@@ -277,16 +296,11 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
     setManuscripts((prev) => [newManuscript, ...prev]);
 
-    // Audit log
     addActivityLog({
-      username: 'editorial_office',
-      userFullName: 'الهيئة التحريرية',
-      userRole: 'editor',
       actionType: 'manuscript_create',
       title: `تسجيل مخطوطة جديدة: ${newManuscript.id}`,
       description: `تم إيداع بحث جديد بعنوان "${(newManuscript.articleTitle || '').slice(0, 60)}..."`,
       targetId: newManuscript.id,
-      ipAddress: '196.221.14.88',
       severity: 'success',
     });
   };
@@ -295,24 +309,31 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setManuscripts((prev) =>
       prev.map((item) => (item.id === id ? { ...item, ...m, updatedAt: new Date().toISOString() } : item))
     );
+
+    addActivityLog({
+      actionType: 'manuscript_update',
+      title: `تعديل بيانات المخطوطة ${id}`,
+      description: `تم تعديل حقول: ${Object.keys(m).join('، ') || 'بيانات غير محددة'}`,
+      targetId: id,
+      severity: 'info',
+    });
   };
 
   const deleteManuscript = (id: string) => {
     setManuscripts((prev) => prev.filter((item) => item.id !== id));
+
     addActivityLog({
-      username: 'editorial_office',
-      userFullName: 'الهيئة التحريرية',
-      userRole: 'editor',
       actionType: 'manuscript_delete',
       title: `حذف مخطوطة من المنظومة: ${id}`,
       description: `تم حذف المخطوطة ${id} من قاعدة البيانات النشطة`,
       targetId: id,
-      ipAddress: '196.221.14.88',
       severity: 'danger',
     });
   };
 
   const updateManuscriptStatus = (id: string, status: ManuscriptStatus, comment?: string) => {
+    const beforeStatus = manuscripts.find((x) => x.id === id)?.status;
+
     setManuscripts((prev) =>
       prev.map((item) => {
         if (item.id === id) {
@@ -326,15 +347,12 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return item;
       })
     );
+
     addActivityLog({
-      username: 'editor',
-      userFullName: 'الهيئة التحريرية',
-      userRole: 'editor',
       actionType: 'manuscript_status',
       title: `تغيير حالة المخطوطة ${id}`,
-      description: `تم تحديث الحالة إلى: "${status}"`,
+      description: `من "${beforeStatus ?? '-'}" إلى "${status}"${comment ? ` — ${comment}` : ''}`,
       targetId: id,
-      ipAddress: '196.221.14.88',
       severity: 'info',
     });
   };
@@ -357,9 +375,16 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return item;
       })
     );
+
+    addActivityLog({
+      actionType: 'reviewer_assign',
+      title: `تعيين محكم للمخطوطة ${manuscriptId}`,
+      description: `تم تعيين المحكم "${(reviewer as any)?.name ?? (reviewer as any)?.fullName ?? 'غير محدد'}" في الخانة ${slot}`,
+      targetId: manuscriptId,
+      severity: 'info',
+    });
   };
 
-  // Waiting list CRUD
   const addWaitingItem = (item: Omit<WaitingListItem, 'id' | 'addedDate'>) => {
     const newItem: WaitingListItem = {
       ...item,
@@ -367,34 +392,80 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       addedDate: new Date().toISOString().split('T')[0],
     };
     setWaitingList((prev) => [...prev, newItem]);
+
+    addActivityLog({
+      actionType: 'deadline_extended',
+      title: `إضافة عنصر جديد لقائمة الانتظار: ${newItem.id}`,
+      description: `تمت إضافة عنصر جديد إلى قائمة الانتظار`,
+      targetId: newItem.id,
+      severity: 'info',
+    });
   };
 
   const updateWaitingItem = (id: string, item: Partial<WaitingListItem>) => {
     setWaitingList((prev) => prev.map((w) => (w.id === id ? { ...w, ...item } : w)));
+
+    addActivityLog({
+      actionType: 'deadline_extended',
+      title: `تحديث عنصر من قائمة الانتظار: ${id}`,
+      description: `تم تعديل بيانات عنصر قائمة الانتظار`,
+      targetId: id,
+      severity: 'info',
+    });
   };
 
   const deleteWaitingItem = (id: string) => {
     setWaitingList((prev) => prev.filter((w) => w.id !== id));
+
+    addActivityLog({
+      actionType: 'deadline_extended',
+      title: `حذف عنصر من قائمة الانتظار: ${id}`,
+      description: `تم حذف عنصر من قائمة الانتظار`,
+      targetId: id,
+      severity: 'warning',
+    });
   };
 
-  // Donations CRUD
   const addDonation = (d: Omit<DonationRecord, 'id'>) => {
     const newDonation: DonationRecord = {
       ...d,
       id: `DON-${Date.now().toString().slice(-4)}`,
     };
     setDonations((prev) => [newDonation, ...prev]);
+
+    addActivityLog({
+      actionType: 'fee_payment',
+      title: `إضافة حركة رسوم/تبرع: ${newDonation.id}`,
+      description: `تم تسجيل حركة مالية جديدة`,
+      targetId: newDonation.id,
+      severity: 'success',
+    });
   };
 
   const updateDonation = (id: string, d: Partial<DonationRecord>) => {
     setDonations((prev) => prev.map((item) => (item.id === id ? { ...item, ...d } : item)));
+
+    addActivityLog({
+      actionType: 'fee_payment',
+      title: `تحديث حركة رسوم/تبرع: ${id}`,
+      description: `تم تعديل حركة مالية`,
+      targetId: id,
+      severity: 'info',
+    });
   };
 
   const deleteDonation = (id: string) => {
     setDonations((prev) => prev.filter((item) => item.id !== id));
+
+    addActivityLog({
+      actionType: 'fee_payment',
+      title: `حذف حركة رسوم/تبرع: ${id}`,
+      description: `تم حذف حركة مالية`,
+      targetId: id,
+      severity: 'danger',
+    });
   };
 
-  // Documents CRUD
   const addDocument = (doc: Omit<DocumentArchiveItem, 'id' | 'createdAt'>) => {
     const newDoc: DocumentArchiveItem = {
       ...doc,
@@ -402,47 +473,116 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       createdAt: new Date().toISOString(),
     };
     setDocuments((prev) => [newDoc, ...prev]);
+
+    addActivityLog({
+      actionType: 'document_archive',
+      title: `إضافة مستند جديد: ${newDoc.id}`,
+      description: `تمت أرشفة مستند جديد`,
+      targetId: newDoc.id,
+      severity: 'success',
+    });
   };
 
   const updateDocument = (id: string, doc: Partial<DocumentArchiveItem>) => {
     setDocuments((prev) => prev.map((item) => (item.id === id ? { ...item, ...doc } : item)));
+
+    addActivityLog({
+      actionType: 'document_archive',
+      title: `تحديث مستند: ${id}`,
+      description: `تم تعديل بيانات المستند`,
+      targetId: id,
+      severity: 'info',
+    });
   };
 
   const deleteDocument = (id: string) => {
     setDocuments((prev) => prev.filter((item) => item.id !== id));
+
+    addActivityLog({
+      actionType: 'document_archive',
+      title: `حذف مستند: ${id}`,
+      description: `تم حذف المستند من الأرشيف`,
+      targetId: id,
+      severity: 'danger',
+    });
   };
 
-  // Reviewers CRUD
   const addReviewer = (r: Omit<ReviewerProfile, 'id'>) => {
     const newReviewer: ReviewerProfile = {
       ...r,
       id: `REV-${Date.now().toString().slice(-4)}`,
     };
     setReviewers((prev) => [newReviewer, ...prev]);
+
+    addActivityLog({
+      actionType: 'reviewer_assign',
+      title: `إضافة محكم جديد: ${newReviewer.id}`,
+      description: `تم إنشاء ملف محكم جديد`,
+      targetId: newReviewer.id,
+      severity: 'success',
+    });
   };
 
   const updateReviewer = (id: string, r: Partial<ReviewerProfile>) => {
     setReviewers((prev) => prev.map((item) => (item.id === id ? { ...item, ...r } : item)));
+
+    addActivityLog({
+      actionType: 'reviewer_assign',
+      title: `تحديث بيانات محكم: ${id}`,
+      description: `تم تعديل بيانات المحكم`,
+      targetId: id,
+      severity: 'info',
+    });
   };
 
   const deleteReviewer = (id: string) => {
     setReviewers((prev) => prev.filter((item) => item.id !== id));
+
+    addActivityLog({
+      actionType: 'reviewer_assign',
+      title: `حذف محكم: ${id}`,
+      description: `تم حذف ملف المحكم`,
+      targetId: id,
+      severity: 'danger',
+    });
   };
 
-  // Cash Flow CRUD
   const addCashTransaction = (tx: CashFlowTransaction) => {
     setCashFlow((prev) => [tx, ...prev]);
+
+    addActivityLog({
+      actionType: 'cash_transaction',
+      title: `إضافة حركة نقدية: ${tx.id}`,
+      description: `تمت إضافة عملية مالية جديدة`,
+      targetId: tx.id,
+      severity: 'success',
+    });
   };
 
   const updateCashTransaction = (id: string, tx: Partial<CashFlowTransaction>) => {
     setCashFlow((prev) => prev.map((item) => (item.id === id ? { ...item, ...tx } : item)));
+
+    addActivityLog({
+      actionType: 'cash_transaction',
+      title: `تحديث حركة نقدية: ${id}`,
+      description: `تم تعديل عملية مالية`,
+      targetId: id,
+      severity: 'info',
+    });
   };
 
   const deleteCashTransaction = (id: string) => {
     setCashFlow((prev) => prev.filter((item) => item.id !== id));
+
+    addActivityLog({
+      actionType: 'cash_transaction',
+      title: `حذف حركة نقدية: ${id}`,
+      description: `تم حذف عملية مالية`,
+      targetId: id,
+      severity: 'danger',
+    });
   };
 
-  // Reset to default
   const resetToDefaultData = () => {
     if (window.confirm('هل تريد بالتأكيد استعادة البيانات الافتراضية؟ سيتم استبدال أية تغييرات غير محفوظة.')) {
       setManuscripts(INITIAL_MANUSCRIPTS);
@@ -454,10 +594,16 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setActivityLogs(import.meta.env.DEV ? INITIAL_ACTIVITY_LOGS : []);
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(ACTIVITY_LOGS_KEY);
+
+      addActivityLog({
+        actionType: 'system_backup',
+        title: 'استعادة البيانات الافتراضية',
+        description: 'تمت استعادة قاعدة البيانات المحلية إلى الوضع الافتراضي',
+        severity: 'danger',
+      });
     }
   };
 
-  // Export JSON
   const exportDatabaseJson = () => {
     const data = {
       manuscripts,
@@ -477,9 +623,15 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     link.download = `AASJ_Database_Backup_${new Date().toISOString().split('T')[0]}.json`;
     link.click();
     URL.revokeObjectURL(url);
+
+    addActivityLog({
+      actionType: 'system_backup',
+      title: 'تصدير نسخة احتياطية JSON',
+      description: `تم تصدير نسخة من البيانات المحلية (${manuscripts.length} مخطوطة)`,
+      severity: 'info',
+    });
   };
 
-  // Import JSON
   const importDatabaseJson = (jsonString: string): boolean => {
     try {
       const parsed = JSON.parse(jsonString);
@@ -504,9 +656,25 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (parsed.activityLogs && Array.isArray(parsed.activityLogs)) {
         setActivityLogs(parsed.activityLogs);
       }
+
+      addActivityLog({
+        actionType: 'system_backup',
+        title: 'استيراد نسخة JSON',
+        description: 'تم استيراد بيانات إلى المنظومة المحلية',
+        severity: 'warning',
+      });
+
       return true;
     } catch (e) {
       console.error('Import failed', e);
+
+      addActivityLog({
+        actionType: 'notification_alert',
+        title: 'فشل استيراد نسخة JSON',
+        description: 'حدث خطأ أثناء محاولة استيراد البيانات',
+        severity: 'danger',
+      });
+
       return false;
     }
   };
