@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AcceptanceLetterModal } from './components/AcceptanceLetterModal';
 import { ActivityLogsModule } from './components/ActivityLogsModule';
 import { AuthorPortalModule } from './components/AuthorPortalModule';
@@ -29,13 +29,8 @@ import { DonationRecord, JournalDiscipline, Manuscript } from './types/journal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
 const JournalAppContent: React.FC = () => {
-  const { activeModule, setActiveModule, language } = useJournal();
+  const { activeModule, setActiveModule, language, addActivityLog } = useJournal();
   const { currentUser, canAccessModule } = useAuth();
-
-  // If user is not authenticated, show the official Portal Login Gateway page
-  if (!currentUser) {
-    return <PortalLoginPage />;
-  }
 
   // Modal states
   const [selectedManuscriptForDossier, setSelectedManuscriptForDossier] = useState<Manuscript | null>(null);
@@ -46,6 +41,46 @@ const JournalAppContent: React.FC = () => {
 
   // Filter passing from 7 Sections view to Manuscripts view
   const [selectedSectionFilter, setSelectedSectionFilter] = useState<string>('all');
+
+  // ---- Audit: log login / logout automatically ----
+  // نبدأ بالمستخدم الحالي حتى لا نسجل "دخول" وهمي عند استعادة جلسة محفوظة بعد refresh
+  const lastUserRef = useRef<typeof currentUser>(currentUser);
+
+  useEffect(() => {
+    const prevUser = lastUserRef.current;
+    const currUser = currentUser;
+
+    // Login (من لا مستخدم إلى مستخدم، أو تبديل حساب)
+    if (currUser && (!prevUser || prevUser.id !== currUser.id)) {
+      addActivityLog({
+        username: currUser.username,
+        userFullName: currUser.fullName,
+        userRole: currUser.role,
+        actionType: 'login',
+        title: `تسجيل دخول: @${currUser.username}`,
+        description: `تم تسجيل الدخول بنجاح بواسطة ${currUser.fullName}`,
+        ipAddress: 'N/A',
+        severity: 'success',
+      });
+    }
+
+    // Logout (من مستخدم إلى لا مستخدم)
+    if (!currUser && prevUser) {
+      addActivityLog({
+        username: prevUser.username,
+        userFullName: prevUser.fullName,
+        userRole: prevUser.role,
+        actionType: 'logout',
+        title: `تسجيل خروج: @${prevUser.username}`,
+        description: `قام ${prevUser.fullName} بتسجيل الخروج من المنظومة`,
+        ipAddress: 'N/A',
+        severity: 'info',
+      });
+    }
+
+    lastUserRef.current = currUser;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
 
   // Automatic routing based on user role
   useEffect(() => {
@@ -59,6 +94,12 @@ const JournalAppContent: React.FC = () => {
       }
     }
   }, [currentUser, activeModule]);
+
+  // If user is not authenticated, show the official Portal Login Gateway page
+  // (يجب أن يكون بعد جميع الـ hooks)
+  if (!currentUser) {
+    return <PortalLoginPage />;
+  }
 
   const handleOpenAddManuscript = () => {
     setManuscriptToEdit(null);
