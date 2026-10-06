@@ -65,12 +65,15 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
+        // Keep google user connected after refresh/browser restart
         setGoogleUser(user);
-        setAccessToken(token);
-        setCachedAccessToken(token);
+
+        // Token may be null after refresh (in-memory token lost), so we keep user and refresh on demand
+        setAccessToken(token || null);
+        setCachedAccessToken(token || null);
       },
       () => {
-        // Token needs refresh / not authenticated
+        // Do NOT force-disconnect googleUser here; keep account session and refresh token when needed
         setAccessToken(null);
         setCachedAccessToken(null);
       }
@@ -313,7 +316,7 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
   return (
     <GoogleDriveContext.Provider
       value={{
-        isGoogleConnected: !!accessToken,
+        isGoogleConnected: !!googleUser, // connected as long as Firebase user session exists
         googleUser,
         accessToken,
         isAuthenticating,
