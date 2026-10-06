@@ -87,6 +87,7 @@ const JournalContext = createContext<JournalContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'AASJ_JOURNAL_DATABASE_ALAZHAR_EKB_V2';
 const LANG_STORAGE_KEY = 'AASJ_JOURNAL_LANG_V2';
+const ACTIVITY_LOGS_KEY = 'AASJ_ACTIVITY_LOGS_ALAZHAR_V2';
 
 export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [language, setLanguageState] = useState<Language>(() => {
@@ -188,22 +189,35 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() => {
     try {
-      const stored = localStorage.getItem('AASJ_ACTIVITY_LOGS_ALAZHAR_V1');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+      // 1) V2 first
+      const v2Stored = localStorage.getItem(ACTIVITY_LOGS_KEY);
+      if (v2Stored !== null) {
+        const parsed = JSON.parse(v2Stored);
+        if (Array.isArray(parsed)) {
+          return parsed; // even if []
+        }
+      }
+
+      // 2) Optional migration from V1
+      const v1Stored = localStorage.getItem('AASJ_ACTIVITY_LOGS_ALAZHAR_V1');
+      if (v1Stored !== null) {
+        const parsedV1 = JSON.parse(v1Stored);
+        if (Array.isArray(parsedV1)) {
+          localStorage.setItem(ACTIVITY_LOGS_KEY, JSON.stringify(parsedV1));
+          return parsedV1;
         }
       }
     } catch (e) {
       console.error('Error loading stored activity logs', e);
     }
-    return INITIAL_ACTIVITY_LOGS;
+
+    // first run only
+    return import.meta.env.DEV ? INITIAL_ACTIVITY_LOGS : [];
   });
 
   useEffect(() => {
     try {
-      localStorage.setItem('AASJ_ACTIVITY_LOGS_ALAZHAR_V1', JSON.stringify(activityLogs));
+      localStorage.setItem(ACTIVITY_LOGS_KEY, JSON.stringify(activityLogs));
     } catch (e) {
       console.error('Failed to save activity logs', e);
     }
@@ -437,7 +451,9 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setDocuments(INITIAL_DOCUMENTS);
       setReviewers(INITIAL_REVIEWERS);
       setCashFlow(INITIAL_CASH_FLOW);
+      setActivityLogs(import.meta.env.DEV ? INITIAL_ACTIVITY_LOGS : []);
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(ACTIVITY_LOGS_KEY);
     }
   };
 
@@ -450,6 +466,7 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       documents,
       reviewers,
       cashFlow,
+      activityLogs,
       exportedAt: new Date().toISOString(),
       system: 'AASJ Editorial Board Management System',
     };
@@ -483,6 +500,9 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
       if (parsed.cashFlow && Array.isArray(parsed.cashFlow)) {
         setCashFlow(parsed.cashFlow);
+      }
+      if (parsed.activityLogs && Array.isArray(parsed.activityLogs)) {
+        setActivityLogs(parsed.activityLogs);
       }
       return true;
     } catch (e) {
