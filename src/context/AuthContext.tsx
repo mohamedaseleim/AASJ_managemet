@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { INITIAL_USERS } from '../data/initialUsers';
-import { ActiveModule, JournalDiscipline, UserAccount, UserRole } from '../types/journal';
+import { ActiveModule, UserAccount } from '../types/journal';
 
 interface AuthContextType {
   currentUser: UserAccount | null;
@@ -52,7 +52,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       console.error('Failed to load user session', e);
     }
-    // No active session: lands on the Portal Login Gateway page
     return null;
   });
 
@@ -94,6 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return false;
   };
 
+  // مهم: logout محلي فقط — لا يقطع اتصال Google Drive
   const logout = () => {
     setCurrentUser(null);
   };
@@ -174,12 +174,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
-  // Role-Based Access Control logic (RBAC)
   const canAccessModule = (module: ActiveModule): boolean => {
     if (!currentUser) return false;
     const { role } = currentUser;
 
-    // Activity & Audit log is STRICTLY accessible ONLY by the Admin role
     if (module === 'activity_logs') {
       return role === 'admin';
     }
@@ -191,7 +189,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return role !== 'reviewer' && role !== 'author';
 
       case 'sections':
-        return true; // All authenticated users can view the 7 sections of the journal
+        return true;
 
       case 'manuscripts':
       case 'editorial_reports':
@@ -249,7 +247,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
 
       case 'cash_flow':
-        // Financial ledger is overseen by Dean / General Supervisor and Secretary
         return role === 'general_supervisor' || role === 'secretary';
 
       case 'users':
