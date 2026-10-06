@@ -1,17 +1,14 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
-  getAuth,
   signInWithPopup,
   GoogleAuthProvider,
   onAuthStateChanged,
   User,
   signOut,
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { auth } from './firebase';
 
-// Initialize Firebase App instance once
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
+// أعدنا التصدير حتى تبقى الملفات الأخرى التي تستورد auth من هذا الملف تعمل دون تغيير
+export { auth };
 
 // Scope for Google Drive file operations
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
