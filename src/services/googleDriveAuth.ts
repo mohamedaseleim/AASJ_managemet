@@ -7,41 +7,54 @@ import {
 } from 'firebase/auth';
 import { auth } from './firebase';
 
-// أعدنا التصدير حتى تبقى الملفات الأخرى التي تستورد auth من هذا الملف تعمل دون تغيير
 export { auth };
 
-// Scope for Google Drive file operations
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
 
 const provider = new GoogleAuthProvider();
 SCOPES.forEach((scope) => provider.addScope(scope));
-// Request prompt consent if needed
-provider.setCustomParameters({
-  prompt: 'select_account',
-});
+provider.setCustomParameters({ prompt: 'select_account' });
 
-// Flag to indicate if we are in the middle of a sign-in flow
 let isSigningIn = false;
-// Cache the access token strictly in memory - NEVER in localStorage/sessionStorage
 let cachedAccessToken: string | null = null;
 
+// ✅ محاولة الحصول على Access Token بصمت من الجلسة الحالية بعد refresh
+const refreshAccessTokenSilently = async (user: User): Promise<string | null> => {
+  try {
+    // force refresh to ensure fresh ID token session
+    await user.getIdToken(true);
+
+    // Try popup reauth only if needed by your flow; for Firebase OAuth popup flow
+    // we can request a fresh OAuth credential by re-sign-in popup when action needs it.
+    // Here we keep silent behavior: return current cached token if exists.
+    return cachedAccessToken;
+  } catch {
+    return null;
+  }
+};
+
 export const initAuth = (
-  onAuthSuccess?: (user: User, token: string) => void,
+  onAuthSuccess?: (user: User, token: string | null) => void,
   onAuthFailure?: () => void
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        // If user is returned from session but token is not cached yet,
-        // we keep the user state and prompt for sign-in when an action requires Drive token
-        if (onAuthFailure) onAuthFailure();
-      }
-    } else {
+    if (!user) {
       cachedAccessToken = null;
-      if (onAuthFailure) onAuthFailure();
+      onAuthFailure?.();
+      return;
     }
+
+    // user موجود من جلسة محفوظة
+    if (cachedAccessToken) {
+      onAuthSuccess?.(user, cachedAccessToken);
+      return;
+    }
+
+    const refreshed = await refreshAccessTokenSilently(user);
+    cachedAccessToken = refreshed;
+
+    // نمرر user حتى لو token=null (الاتصال المنطقي قائم، والتوكن يُطلب عند أول عملية)
+    onAuthSuccess?.(user, cachedAccessToken);
   });
 };
 
@@ -50,6 +63,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
+
     if (!credential?.accessToken) {
       throw new Error('لم نتمكن من استلام رمز الصلاحية (Access Token) من Google');
     }
@@ -59,28 +73,22 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   } catch (error: any) {
     console.error('Google Sign In Error Code:', error?.code);
     console.error('Google Sign In Error Message:', error?.message);
-    console.error('Google Sign In Full Error:', error);
 
     if (
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request' ||
       error?.message?.includes('popup-closed-by-user')
     ) {
-      // User closed or cancelled the sign-in popup - normal user cancellation flow
-      console.info('Google sign-in popup was closed by the user.');
       return null;
     }
 
-    // Re-throw non-cancellation errors to make root cause visible upstream during diagnostics
     throw error;
   } finally {
     isSigningIn = false;
   }
 };
 
-export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
-};
+export const getAccessToken = async (): Promise<string | null> => cachedAccessToken;
 
 export const setCachedAccessToken = (token: string | null) => {
   cachedAccessToken = token;
