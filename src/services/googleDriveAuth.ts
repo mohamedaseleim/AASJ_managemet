@@ -15,21 +15,51 @@ const provider = new GoogleAuthProvider();
 SCOPES.forEach((scope) => provider.addScope(scope));
 provider.setCustomParameters({ prompt: 'select_account' });
 
-let isSigningIn = false;
+const TOKEN_KEY = 'AASJ_GDRIVE_TOKEN_V1';
+const TOKEN_TTL_MS = 55 * 60 * 1000; // توكن Google صالح ~60 دقيقة
+
 let cachedAccessToken: string | null = null;
 
-// ✅ محاولة الحصول على Access Token بصمت من الجلسة الحالية بعد refresh
-const refreshAccessTokenSilently = async (user: User): Promise<string | null> => {
+const saveToken = (token: string | null) => {
+  cachedAccessToken = token;
   try {
-    // force refresh to ensure fresh ID token session
-    await user.getIdToken(true);
-
-    // Try popup reauth only if needed by your flow; for Firebase OAuth popup flow
-    // we can request a fresh OAuth credential by re-sign-in popup when action needs it.
-    // Here we keep silent behavior: return current cached token if exists.
-    return cachedAccessToken;
+    if (token) {
+      sessionStorage.setItem(
+        TOKEN_KEY,
+        JSON.stringify({ token, expiresAt: Date.now() + TOKEN_TTL_MS })
+      );
+    } else {
+      sessionStorage.removeItem(TOKEN_KEY);
+    }
   } catch {
-    return null;
+    /* ignore */
+  }
+};
+
+const loadStoredToken = (): string | null => {
+  try {
+    const raw = sessionStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    const { token, expiresAt } = JSON.parse(raw);
+    if (token && typeof expiresAt === 'number' && expiresAt > Date.now()) {
+      return token;
+    }
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+  return null;
+};
+
+// تحقق فعلي أن التوكن ما زال مقبولًا لدى Google
+const isTokenValid = async (token: string): Promise<boolean> => {
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`
+    );
+    return res.ok;
+  } catch {
+    return false;
   }
 };
 
@@ -39,28 +69,23 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (!user) {
-      cachedAccessToken = null;
+      saveToken(null);
       onAuthFailure?.();
       return;
     }
 
-    // user موجود من جلسة محفوظة
-    if (cachedAccessToken) {
-      onAuthSuccess?.(user, cachedAccessToken);
-      return;
+    let token = cachedAccessToken || loadStoredToken();
+    if (token && !(await isTokenValid(token))) {
+      token = null;
+      saveToken(null);
     }
-
-    const refreshed = await refreshAccessTokenSilently(user);
-    cachedAccessToken = refreshed;
-
-    // نمرر user حتى لو token=null (الاتصال المنطقي قائم، والتوكن يُطلب عند أول عملية)
-    onAuthSuccess?.(user, cachedAccessToken);
+    cachedAccessToken = token;
+    onAuthSuccess?.(user, token);
   });
 };
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   try {
-    isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
 
@@ -68,12 +93,10 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       throw new Error('لم نتمكن من استلام رمز الصلاحية (Access Token) من Google');
     }
 
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    saveToken(credential.accessToken);
+    return { user: result.user, accessToken: credential.accessToken };
   } catch (error: any) {
-    console.error('Google Sign In Error Code:', error?.code);
-    console.error('Google Sign In Error Message:', error?.message);
-
+    console.error('Google Sign In Error:', error?.code, error?.message);
     if (
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request' ||
@@ -81,20 +104,18 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     ) {
       return null;
     }
-
     throw error;
-  } finally {
-    isSigningIn = false;
   }
 };
 
-export const getAccessToken = async (): Promise<string | null> => cachedAccessToken;
+export const getAccessToken = async (): Promise<string | null> =>
+  cachedAccessToken || loadStoredToken();
 
 export const setCachedAccessToken = (token: string | null) => {
-  cachedAccessToken = token;
+  saveToken(token);
 };
 
 export const logoutGoogle = async () => {
   await signOut(auth);
-  cachedAccessToken = null;
+  saveToken(null);
 };
