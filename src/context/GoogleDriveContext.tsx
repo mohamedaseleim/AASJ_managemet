@@ -15,6 +15,7 @@ import { useJournal } from './JournalContext';
 
 interface GoogleDriveContextType {
   isGoogleConnected: boolean;
+  needsReconnect: boolean;
   googleUser: User | null;
   accessToken: string | null;
   isAuthenticating: boolean;
@@ -61,17 +62,17 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return null;
   });
 
-  // Listen to Firebase Auth state on mount
+  // Listen to Firebase Auth state on mount.
+  // initAuth يستعيد التوكن المحفوظ (sessionStorage) ويتحقق من صلاحيته لدى Google.
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
         setGoogleUser(user);
         setAccessToken(token || null);
-        setCachedAccessToken(token || null);
       },
       () => {
+        setGoogleUser(null);
         setAccessToken(null);
-        setCachedAccessToken(null);
       }
     );
 
@@ -80,7 +81,6 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   }, []);
 
-  // استخدام useCallback لمنع إعادة إنشاء الدوال في كل ريندر
   const connectGoogleDrive = useCallback(async (): Promise<string | null> => {
     setIsAuthenticating(true);
     try {
@@ -310,9 +310,11 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }, [accessToken, connectGoogleDrive, folderStructure, addActivityLog]);
 
-  // استخدام useMemo لتغليف القيم والدوال وتجنب إعادة تصيير المكونات المستهلكة
   const contextValue = useMemo(() => ({
-    isGoogleConnected: !!googleUser,
+    // متصل فعليًا فقط عند وجود توكن صالح
+    isGoogleConnected: !!accessToken,
+    // الحساب معروف (جلسة Firebase) لكن التوكن انتهى أو ضاع
+    needsReconnect: !!googleUser && !accessToken,
     googleUser,
     accessToken,
     isAuthenticating,
