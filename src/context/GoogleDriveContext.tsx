@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { User } from 'firebase/auth';
 import {
   googleSignIn,
@@ -65,15 +65,11 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
-        // Keep google user connected after refresh/browser restart
         setGoogleUser(user);
-
-        // Token may be null after refresh (in-memory token lost), so we keep user and refresh on demand
         setAccessToken(token || null);
         setCachedAccessToken(token || null);
       },
       () => {
-        // Do NOT force-disconnect googleUser here; keep account session and refresh token when needed
         setAccessToken(null);
         setCachedAccessToken(null);
       }
@@ -84,7 +80,8 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   }, []);
 
-  const connectGoogleDrive = async (): Promise<string | null> => {
+  // استخدام useCallback لمنع إعادة إنشاء الدوال في كل ريندر
+  const connectGoogleDrive = useCallback(async (): Promise<string | null> => {
     setIsAuthenticating(true);
     try {
       const result = await googleSignIn();
@@ -143,9 +140,9 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } finally {
       setIsAuthenticating(false);
     }
-  };
+  }, [addActivityLog]);
 
-  const disconnectGoogleDrive = async () => {
+  const disconnectGoogleDrive = useCallback(async () => {
     try {
       await logoutGoogle();
       setGoogleUser(null);
@@ -168,9 +165,9 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
         severity: 'danger',
       });
     }
-  };
+  }, [addActivityLog]);
 
-  const setupJournalFolders = async (): Promise<FolderStructureStatus | null> => {
+  const setupJournalFolders = useCallback(async (): Promise<FolderStructureStatus | null> => {
     let currentToken = accessToken;
     if (!currentToken) {
       currentToken = await connectGoogleDrive();
@@ -219,9 +216,9 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } finally {
       setIsSettingUpFolders(false);
     }
-  };
+  }, [accessToken, connectGoogleDrive, addActivityLog]);
 
-  const uploadFileToDrive = async (
+  const uploadFileToDrive = useCallback(async (
     file: File | Blob,
     filename: string,
     targetFolderId?: string,
@@ -265,9 +262,9 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
       throw err;
     }
-  };
+  }, [accessToken, connectGoogleDrive, folderStructure, addActivityLog]);
 
-  const uploadBackupToDrive = async (
+  const uploadBackupToDrive = useCallback(async (
     jsonContent: string,
     filename?: string
   ): Promise<DriveItem> => {
@@ -311,25 +308,38 @@ export const GoogleDriveProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
       throw err;
     }
-  };
+  }, [accessToken, connectGoogleDrive, folderStructure, addActivityLog]);
+
+  // استخدام useMemo لتغليف القيم والدوال وتجنب إعادة تصيير المكونات المستهلكة
+  const contextValue = useMemo(() => ({
+    isGoogleConnected: !!googleUser,
+    googleUser,
+    accessToken,
+    isAuthenticating,
+    folderStructure,
+    isSettingUpFolders,
+    setupProgress,
+    connectGoogleDrive,
+    disconnectGoogleDrive,
+    setupJournalFolders,
+    uploadFileToDrive,
+    uploadBackupToDrive,
+  }), [
+    googleUser,
+    accessToken,
+    isAuthenticating,
+    folderStructure,
+    isSettingUpFolders,
+    setupProgress,
+    connectGoogleDrive,
+    disconnectGoogleDrive,
+    setupJournalFolders,
+    uploadFileToDrive,
+    uploadBackupToDrive,
+  ]);
 
   return (
-    <GoogleDriveContext.Provider
-      value={{
-        isGoogleConnected: !!googleUser, // connected as long as Firebase user session exists
-        googleUser,
-        accessToken,
-        isAuthenticating,
-        folderStructure,
-        isSettingUpFolders,
-        setupProgress,
-        connectGoogleDrive,
-        disconnectGoogleDrive,
-        setupJournalFolders,
-        uploadFileToDrive,
-        uploadBackupToDrive,
-      }}
-    >
+    <GoogleDriveContext.Provider value={contextValue}>
       {children}
     </GoogleDriveContext.Provider>
   );
