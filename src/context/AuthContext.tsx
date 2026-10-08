@@ -93,12 +93,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = subscribeToUsers(
       (cloudUsers) => {
         if (cloudUsers && cloudUsers.length > 0) {
-          setUsers(cloudUsers);
+          setUsers((prevUsers) => {
+            const mergedMap = new Map<string, UserAccount>();
+            for (const u of prevUsers) {
+              mergedMap.set(u.id, u);
+            }
+            for (const cu of cloudUsers) {
+              const existing =
+                mergedMap.get(cu.id) ||
+                Array.from(mergedMap.values()).find(
+                  (u) => u.username.toLowerCase() === cu.username.toLowerCase()
+                );
+              if (existing) {
+                mergedMap.set(existing.id, {
+                  ...existing,
+                  ...cu,
+                  // Never overwrite with empty password if local user has one
+                  password: cu.password || existing.password || '',
+                });
+              } else {
+                mergedMap.set(cu.id, cu);
+              }
+            }
+            return Array.from(mergedMap.values());
+          });
 
           // Update current user session if updated remotely on another device
           setCurrentUser((prevSession) => {
             if (!prevSession) return null;
-            const fresh = cloudUsers.find((u) => u.id === prevSession.id);
+            const fresh = cloudUsers.find(
+              (u) => u.id === prevSession.id || u.username.toLowerCase() === prevSession.username.toLowerCase()
+            );
             return fresh ? { ...fresh, password: '' } : prevSession;
           });
 
@@ -225,48 +250,94 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Optimistic local update
     setUsers((prev) => [...prev, account]);
 
+    // Persist immediately to localStorage
+    try {
+      const currentCached = secureStorageGet<UserAccount[]>(USERS_STORAGE_KEY) || users;
+      secureStorageSet(USERS_STORAGE_KEY, [...currentCached, account]);
+    } catch (e) {
+      console.warn('[AuthContext] Error caching new user to localStorage:', e);
+    }
+
     // Cloud synchronization
     try {
       setSyncStatus('syncing');
       await saveUserToCloud(account);
       setSyncStatus('synced');
     } catch (err) {
-      console.error('[AuthContext] Failed to sync new user to cloud:', err);
-      setSyncStatus('error');
+      console.warn('[AuthContext] Failed to sync new user to cloud (saved locally):', err);
+      setSyncStatus('offline');
     }
 
     return account;
   };
 
   const updateUser = async (id: string, updates: Partial<UserAccount>): Promise<void> => {
-    // Optimistic local update
+    const targetUser = users.find((u) => u.id === id || u.username.toLowerCase() === id.toLowerCase());
+    const targetId = targetUser ? targetUser.id : id;
+
+    const mergedUser: UserAccount = targetUser
+      ? { ...targetUser, ...updates }
+      : ({ ...updates, id: targetId } as UserAccount);
+
+    // 1. Optimistic local state update
     setUsers((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, ...updates } : u))
+      prev.map((u) => (u.id === targetId || u.username.toLowerCase() === targetId.toLowerCase() ? mergedUser : u))
     );
 
-    if (currentUser?.id === id) {
-      setCurrentUser((prev) => (prev ? { ...prev, ...updates, password: '' } : null));
+    // 2. Update active session if it's the current logged in user
+    if (currentUser?.id === targetId || currentUser?.username.toLowerCase() === targetId.toLowerCase()) {
+      setCurrentUser({ ...mergedUser, password: '' });
     }
 
-    // Cloud synchronization
+    // 3. Immediately persist to localStorage
+    try {
+      const currentCached = secureStorageGet<UserAccount[]>(USERS_STORAGE_KEY) || users;
+      let foundInCache = false;
+      const updatedCache = currentCached.map((u) => {
+        if (u.id === targetId || u.username.toLowerCase() === targetId.toLowerCase()) {
+          foundInCache = true;
+          return mergedUser;
+        }
+        return u;
+      });
+      if (!foundInCache) {
+        updatedCache.push(mergedUser);
+      }
+      secureStorageSet(USERS_STORAGE_KEY, updatedCache);
+    } catch (e) {
+      console.warn('[AuthContext] Error writing user update to localStorage:', e);
+    }
+
+    // 4. Cloud synchronization (non-blocking with timeout)
     try {
       setSyncStatus('syncing');
-      await updateUserInCloud(id, updates);
+      await updateUserInCloud(targetId, targetUser ? mergedUser : updates);
       setSyncStatus('synced');
     } catch (err) {
-      console.error('[AuthContext] Failed to sync updated user to cloud:', err);
-      setSyncStatus('error');
+      console.warn('[AuthContext] Failed to sync updated user to cloud (saved locally):', err);
+      setSyncStatus('offline');
     }
   };
 
   const deleteUser = async (id: string): Promise<void> => {
-    if (currentUser?.id === id) {
+    if (currentUser?.id === id || currentUser?.username.toLowerCase() === id.toLowerCase()) {
       alert('لا يمكن حذف الحساب المسجل به حالياً!');
       return;
     }
 
     // Optimistic local update
-    setUsers((prev) => prev.filter((u) => u.id !== id));
+    setUsers((prev) => prev.filter((u) => u.id !== id && u.username.toLowerCase() !== id.toLowerCase()));
+
+    // Persist immediately to localStorage
+    try {
+      const currentCached = secureStorageGet<UserAccount[]>(USERS_STORAGE_KEY) || users;
+      secureStorageSet(
+        USERS_STORAGE_KEY,
+        currentCached.filter((u) => u.id !== id && u.username.toLowerCase() !== id.toLowerCase())
+      );
+    } catch (e) {
+      console.warn('[AuthContext] Error updating localStorage on delete:', e);
+    }
 
     // Cloud synchronization
     try {
@@ -274,8 +345,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await deleteUserFromCloud(id);
       setSyncStatus('synced');
     } catch (err) {
-      console.error('[AuthContext] Failed to delete user from cloud:', err);
-      setSyncStatus('error');
+      console.warn('[AuthContext] Failed to delete user from cloud (deleted locally):', err);
+      setSyncStatus('offline');
     }
   };
 
@@ -322,8 +393,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await updateUserInCloud(targetUser.id, { password: newPass.trim() });
       setSyncStatus('synced');
     } catch (err) {
-      console.error('[AuthContext] Failed to sync new password to cloud:', err);
-      setSyncStatus('error');
+      console.warn('[AuthContext] Failed to sync new password to cloud:', err);
+      setSyncStatus('offline');
     }
 
     return {

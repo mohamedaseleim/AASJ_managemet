@@ -64,7 +64,7 @@ export const UsersManagementModule: React.FC = () => {
     setEditingUser(u);
     setFullName(u.fullName);
     setUsername(u.username);
-    setPassword(u.password);
+    setPassword('');
     setEmail(u.email);
     setPhone(u.phone || '');
     setTitle(u.title || 'د.');
@@ -73,6 +73,11 @@ export const UsersManagementModule: React.FC = () => {
     setAssignedSection(u.assignedSection || JOURNAL_SECTIONS[0].discipline);
     setIsActive(u.isActive);
     setIsModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setEditingUser(null);
   };
 
   const handleRefresh = async () => {
@@ -86,8 +91,22 @@ export const UsersManagementModule: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !fullName.trim() || (!editingUser && !password.trim())) {
+    const cleanUsername = username.toLowerCase().trim();
+    const cleanFullName = fullName.trim();
+
+    if (!cleanUsername || !cleanFullName || (!editingUser && !password.trim())) {
       alert('يرجى ملء جميع الحقول الإلزامية');
+      return;
+    }
+
+    // Check duplicate username (exclude currently editing user)
+    const isDuplicate = users.some((u) => {
+      if (editingUser && u.id === editingUser.id) return false;
+      return u.username.toLowerCase().trim() === cleanUsername;
+    });
+
+    if (isDuplicate) {
+      alert('اسم المستخدم هذا مسجل مسبقاً، يرجى اختيار اسم مستخدم آخر');
       return;
     }
 
@@ -95,12 +114,12 @@ export const UsersManagementModule: React.FC = () => {
     try {
       if (editingUser) {
         const updates: Partial<UserAccount> = {
-          fullName,
-          username: username.toLowerCase().trim(),
-          email,
-          phone,
-          title,
-          affiliation,
+          fullName: cleanFullName,
+          username: cleanUsername,
+          email: email.trim(),
+          phone: phone.trim() || undefined,
+          title: title.trim() || undefined,
+          affiliation: affiliation.trim() || undefined,
           role,
           assignedSection: role === 'executive_editor' ? assignedSection : undefined,
           isActive,
@@ -110,20 +129,14 @@ export const UsersManagementModule: React.FC = () => {
         }
         await updateUser(editingUser.id, updates);
       } else {
-        // Check duplicate username
-        if (users.some((u) => u.username.toLowerCase() === username.toLowerCase().trim())) {
-          alert('اسم المستخدم هذا مسجل مسبقاً، يرجى اختيار اسم مستخدم آخر');
-          return;
-        }
-
         await addUser({
-          fullName,
-          username: username.toLowerCase().trim(),
-          password,
-          email,
-          phone,
-          title,
-          affiliation,
+          fullName: cleanFullName,
+          username: cleanUsername,
+          password: password.trim(),
+          email: email.trim(),
+          phone: phone.trim() || undefined,
+          title: title.trim() || undefined,
+          affiliation: affiliation.trim() || undefined,
           role,
           assignedSection: role === 'executive_editor' ? assignedSection : undefined,
           isActive,
@@ -131,6 +144,7 @@ export const UsersManagementModule: React.FC = () => {
       }
 
       setIsModalOpen(false);
+      setEditingUser(null);
     } catch {
       alert('حدث خطأ أثناء حفظ بيانات المستخدم.');
     } finally {
@@ -368,7 +382,7 @@ export const UsersManagementModule: React.FC = () => {
               <h3 className="font-bold text-sm">
                 {editingUser ? `تعديل بيانات الحساب [@${editingUser.username}]` : 'إنشاء حساب مستخدم جديد وتحديد الصلاحية'}
               </h3>
-              <button onClick={() => setIsModalOpen(false)} className="p-1 text-emerald-200 hover:text-white rounded-lg hover:bg-emerald-900 transition-colors">
+              <button onClick={handleCloseModal} className="p-1 text-emerald-200 hover:text-white rounded-lg hover:bg-emerald-900 transition-colors">
                 ✕
               </button>
             </div>
@@ -527,7 +541,7 @@ export const UsersManagementModule: React.FC = () => {
                 <button
                   type="button"
                   disabled={isSaving}
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={handleCloseModal}
                   className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                 >
                   إلغاء

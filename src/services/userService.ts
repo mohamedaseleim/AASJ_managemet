@@ -7,19 +7,52 @@ import {
   onSnapshot,
   query,
   where,
+  deleteField,
+  writeBatch,
   Unsubscribe,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { UserAccount } from '../types/journal';
 
 /**
+ * Timeout helper for Firestore promises to avoid hanging indefinitely
+ * when offline or when network is restricted.
+ */
+export async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number = 3500,
+  fallbackMsg: string = 'Operation timed out'
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${fallbackMsg} (${timeoutMs}ms)`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Removes any undefined fields to prevent Firestore serialization errors:
  * "Unsupported field value: undefined"
+ * Optionally replaces undefined with deleteField() for partial updates
  */
-export function sanitizeForFirestore<T extends Record<string, any>>(obj: T): Record<string, any> {
+export function sanitizeForFirestore<T extends Record<string, any>>(
+  obj: T,
+  deleteUndefined: boolean = false
+): Record<string, any> {
   const sanitized: Record<string, any> = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (value !== undefined) {
+    if (value === undefined) {
+      if (deleteUndefined) {
+        sanitized[key] = deleteField();
+      }
+    } else {
       sanitized[key] = value;
     }
   }
@@ -51,12 +84,18 @@ export function docToUserAccount(id: string, data: Record<string, any>): UserAcc
  */
 export async function seedUsersIfEmpty(defaultUsers: UserAccount[]): Promise<void> {
   try {
-    const snap = await getDocs(collection(db, 'users'));
+    const snap = await withTimeout(
+      getDocs(collection(db, 'users')),
+      3500,
+      'seedUsersIfEmpty getDocs'
+    );
     if (snap.empty && defaultUsers.length > 0) {
       console.info('[userService] Seeding Firestore with initial users...');
+      const batch = writeBatch(db);
       for (const user of defaultUsers) {
-        await setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user));
+        batch.set(doc(db, 'users', user.id), sanitizeForFirestore(user, false));
       }
+      await withTimeout(batch.commit(), 4000, 'seedUsersIfEmpty batch commit');
     }
   } catch (err) {
     console.warn('[userService] Failed to check or seed initial users:', err);
@@ -110,7 +149,11 @@ export function subscribeToUsers(
  */
 export async function saveUserToCloud(user: UserAccount): Promise<void> {
   try {
-    await setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user), { merge: true });
+    await withTimeout(
+      setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user, true), { merge: true }),
+      3500,
+      `saveUserToCloud(${user.id})`
+    );
   } catch (err: any) {
     console.error('[userService] Failed to save user to Firestore:', err?.message || err);
     throw err;
@@ -122,7 +165,11 @@ export async function saveUserToCloud(user: UserAccount): Promise<void> {
  */
 export async function updateUserInCloud(id: string, updates: Partial<UserAccount>): Promise<void> {
   try {
-    await setDoc(doc(db, 'users', id), sanitizeForFirestore(updates), { merge: true });
+    await withTimeout(
+      setDoc(doc(db, 'users', id), sanitizeForFirestore(updates, true), { merge: true }),
+      3500,
+      `updateUserInCloud(${id})`
+    );
   } catch (err: any) {
     console.error('[userService] Failed to update user in Firestore:', err?.message || err);
     throw err;
@@ -134,7 +181,11 @@ export async function updateUserInCloud(id: string, updates: Partial<UserAccount
  */
 export async function deleteUserFromCloud(id: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'users', id));
+    await withTimeout(
+      deleteDoc(doc(db, 'users', id)),
+      3500,
+      `deleteUserFromCloud(${id})`
+    );
   } catch (err: any) {
     console.error('[userService] Failed to delete user from Firestore:', err?.message || err);
     throw err;
@@ -149,14 +200,22 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
   const cleanUsername = username.trim().toLowerCase();
   try {
     const q = query(collection(db, 'users'), where('username', '==', cleanUsername));
-    const snap = await getDocs(q);
+    const snap = await withTimeout(
+      getDocs(q),
+      3500,
+      'findUserInCloud query'
+    );
     if (!snap.empty) {
       const docSnap = snap.docs[0];
       return docToUserAccount(docSnap.id, docSnap.data());
     }
 
     // Fallback: check all docs in case username casing or index is pending
-    const allSnap = await getDocs(collection(db, 'users'));
+    const allSnap = await withTimeout(
+      getDocs(collection(db, 'users')),
+      3500,
+      'findUserInCloud fallback'
+    );
     for (const d of allSnap.docs) {
       const data = d.data();
       if ((data.username || '').toLowerCase() === cleanUsername) {
@@ -174,7 +233,11 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
  */
 export async function fetchAllUsersFromCloud(): Promise<UserAccount[]> {
   try {
-    const snap = await getDocs(collection(db, 'users'));
+    const snap = await withTimeout(
+      getDocs(collection(db, 'users')),
+      3500,
+      'fetchAllUsersFromCloud'
+    );
     if (!snap.empty) {
       return snap.docs.map((d) => docToUserAccount(d.id, d.data()));
     }
