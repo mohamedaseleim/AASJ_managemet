@@ -1,3 +1,5 @@
+import { initializeApp } from 'firebase/app';
+import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
 import {
   collection,
   doc,
@@ -11,7 +13,7 @@ import {
   writeBatch,
   Unsubscribe,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, firebaseConfig } from './firebase';
 import { UserAccount } from '../types/journal';
 
 /**
@@ -118,7 +120,6 @@ export function subscribeToUsers(
       usersCollection,
       async (snapshot) => {
         if (snapshot.empty && defaultUsers.length > 0) {
-          // If Firestore is empty, surface the default users immediately, then seed in background
           onUsersChanged(defaultUsers);
           await seedUsersIfEmpty(defaultUsers);
           return;
@@ -229,7 +230,6 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
       return docToUserAccount(docSnap.id, docSnap.data());
     }
 
-    // Fallback: check all docs in case username casing or index is pending
     const allSnap = await withTimeout(
       getDocs(collection(db, 'users')),
       5000,
@@ -265,5 +265,24 @@ export async function fetchAllUsersFromCloud(): Promise<UserAccount[]> {
   } catch (err) {
     console.warn('[userService] Failed to fetch users from Firestore:', err);
     throw err;
+  }
+}
+
+/**
+ * دالة لإنشاء مستخدم في Firebase Auth بدون تسجيل خروج المستخدم الحالي
+ * ترجع المعرف (uid) الخاص بالمستخدم الجديد لربطه بقاعدة البيانات
+ */
+export async function createAuthUserAndGetUid(email: string, password: string): Promise<string> {
+  const secondaryApp = initializeApp(firebaseConfig, `SecondaryApp_${Date.now()}`);
+  const secondaryAuth = getAuth(secondaryApp);
+  
+  try {
+    const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+    const uid = userCredential.user.uid;
+    await secondaryAuth.signOut();
+    return uid;
+  } catch (error: any) {
+    console.error('[userService] Failed to create auth user:', error);
+    throw error;
   }
 }
