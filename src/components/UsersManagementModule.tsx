@@ -21,7 +21,6 @@ import { JOURNAL_SECTIONS, ROLE_INFO } from '../data/journalSections';
 import { DISCIPLINE_TRANSLATIONS } from '../translations';
 import { JournalDiscipline, UserAccount, UserRole } from '../types/journal';
 import { ChangePasswordModal } from './ChangePasswordModal';
-import { initialUsers } from '../data/initialUsers'; 
 
 // استيراد الدوال السحابية
 import { 
@@ -70,7 +69,7 @@ export const UsersManagementModule: React.FC = () => {
         setUsers(fetchedUsers);
         setIsLoading(false);
       },
-      initialUsers as UserAccount[],
+      [], // مصفوفة فارغة لتجاوز خطأ الـ Build
       (err) => {
         console.error("خطأ في الاتصال بقاعدة البيانات:", err);
         setIsLoading(false);
@@ -159,7 +158,6 @@ export const UsersManagementModule: React.FC = () => {
           fullUser.password = password.trim();
         }
         
-        // نستخدم saveUserToCloud بدلاً من updateUserInCloud لمنع تمرير أمر deleteField()
         await saveUserToCloud(fullUser);
       } else {
         // إنشاء مستخدم جديد
@@ -185,7 +183,6 @@ export const UsersManagementModule: React.FC = () => {
       setEditingUser(null);
     } catch (err: any) {
       console.error('[UsersManagement] Error saving user account:', err);
-      // إظهار سبب الخطأ بالتفصيل لتسهيل التشخيص
       alert(`حدث خطأ أثناء حفظ بيانات المستخدم في السحابة: ${err.message || 'تأكد من الصلاحيات والاتصال'}`);
     } finally {
       setIsSaving(false);
