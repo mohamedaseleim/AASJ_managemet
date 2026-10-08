@@ -172,13 +172,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshUsers = async () => {
     setSyncStatus('syncing');
     try {
-      const cloudUsers = await fetchAllUsersFromCloud();
-      if (cloudUsers.length > 0) {
-        setUsers(cloudUsers);
-        setSyncStatus('synced');
-      } else {
-        setSyncStatus('synced');
+      // 1. Push: upload local accounts missing from the cloud (never lose unsynced accounts)
+      let cloudUsers = await fetchAllUsersFromCloud();
+      const cloudIds = new Set(cloudUsers.map((c) => c.id));
+      const cloudNames = new Set(cloudUsers.map((c) => c.username.toLowerCase()));
+      const pending = users.filter(
+        (u) => !cloudIds.has(u.id) && !cloudNames.has(u.username.toLowerCase())
+      );
+      if (cloudUsers.length > 0 || users.length > 0) {
+        for (const u of pending) {
+          await saveUserToCloud(u);
+        }
       }
+      // 2. Pull: fetch latest cloud state and merge (keeping local passwords if cloud lacks them)
+      if (pending.length > 0) {
+        cloudUsers = await fetchAllUsersFromCloud();
+      }
+      if (cloudUsers.length > 0) {
+        setUsers((prev) => {
+          const prevMap = new Map(prev.map((u) => [u.id, u]));
+          const merged = cloudUsers.map((cu) => ({
+            ...cu,
+            password: cu.password || prevMap.get(cu.id)?.password || '',
+          }));
+          const mergedIds = new Set(merged.map((u) => u.id));
+          return [...merged, ...prev.filter((u) => !mergedIds.has(u.id) && pending.some((p) => p.id === u.id))];
+        });
+      }
+      setSyncStatus('synced');
     } catch (err) {
       console.warn('[AuthContext] Manual refresh failed:', err);
       setSyncStatus('error');
@@ -243,7 +264,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const addUser = async (newUser: Omit<UserAccount, 'id' | 'createdAt'>): Promise<UserAccount> => {
     const account: UserAccount = {
       ...newUser,
-      id: `USR-${Date.now().toString().slice(-5)}`,
+      id: `USR-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       createdAt: new Date().toISOString(),
     };
 
