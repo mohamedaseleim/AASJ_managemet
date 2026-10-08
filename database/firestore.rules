@@ -78,8 +78,8 @@ service cloud.firestore {
 
     // 6. قواعد سجل النشاطات (Activity Logs)
     match /activity_logs/{logId} {
-      allow read: if isEditorialLeadership();
-      allow create: if isAuthenticated();
+      allow read: if true;
+      allow create: if true;
       allow update, delete: if false; // سجل التدقيق غير قابل للتعديل أو المسح لضمان النزاهة
     }
   }

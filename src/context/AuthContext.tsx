@@ -8,6 +8,7 @@ import {
   deleteUserFromCloud,
   findUserInCloud,
   fetchAllUsersFromCloud,
+  batchSaveUsersToCloud,
 } from '../services/userService';
 
 export type CloudSyncStatus = 'synced' | 'syncing' | 'offline' | 'error';
@@ -84,14 +85,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return null;
   });
 
-  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>('syncing');
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>(() =>
+    typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing'
+  );
 
   // Real-time synchronization with cloud Firestore across devices
   useEffect(() => {
-    setSyncStatus('syncing');
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setSyncStatus('offline');
+    } else {
+      setSyncStatus('syncing');
+    }
+
+    // Gracefully fallback to 'offline' if initial connection takes too long
+    const initialSyncTimer = setTimeout(() => {
+      setSyncStatus((current) => (current === 'syncing' ? 'offline' : current));
+    }, 6000);
 
     const unsubscribe = subscribeToUsers(
       (cloudUsers) => {
+        clearTimeout(initialSyncTimer);
         if (cloudUsers && cloudUsers.length > 0) {
           setUsers((prevUsers) => {
             const mergedMap = new Map<string, UserAccount>();
@@ -105,9 +118,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   (u) => u.username.toLowerCase() === cu.username.toLowerCase()
                 );
               if (existing) {
+                // Check if local version has more recent edits than cloud
+                const localIsNewer =
+                  existing.updatedAt && cu.updatedAt
+                    ? new Date(existing.updatedAt).getTime() > new Date(cu.updatedAt).getTime()
+                    : false;
+
                 mergedMap.set(existing.id, {
-                  ...existing,
-                  ...cu,
+                  ...(localIsNewer ? cu : existing),
+                  ...(localIsNewer ? existing : cu),
                   // Never overwrite with empty password if local user has one
                   password: cu.password || existing.password || '',
                 });
@@ -132,6 +151,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       },
       users, // Fallback seed if cloud collection is pristine
       (error) => {
+        clearTimeout(initialSyncTimer);
         console.warn('[AuthContext] Cloud sync unavailable or offline:', error?.message || error);
         setSyncStatus('offline');
       }
@@ -148,9 +168,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
     window.addEventListener('storage', handleStorageEvent);
 
+    // Listen to network status changes
+    const handleOnline = () => {
+      refreshUsers();
+    };
+    const handleOffline = () => {
+      setSyncStatus('offline');
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     return () => {
+      clearTimeout(initialSyncTimer);
       unsubscribe();
       window.removeEventListener('storage', handleStorageEvent);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
@@ -170,39 +203,69 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [currentUser]);
 
   const refreshUsers = async () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setSyncStatus('offline');
+      return;
+    }
+
     setSyncStatus('syncing');
     try {
-      // 1. Push: upload local accounts missing from the cloud (never lose unsynced accounts)
-      let cloudUsers = await fetchAllUsersFromCloud();
+      // 1. Fetch current cloud state. If network is unreachable, exit cleanly without wiping local data.
+      let cloudUsers: UserAccount[] = [];
+      try {
+        cloudUsers = await fetchAllUsersFromCloud();
+      } catch (fetchErr) {
+        console.warn('[AuthContext] Cloud fetch during refresh failed:', fetchErr);
+        setSyncStatus('offline');
+        return;
+      }
+
+      // 2. Identify local accounts not yet present in Firestore
       const cloudIds = new Set(cloudUsers.map((c) => c.id));
       const cloudNames = new Set(cloudUsers.map((c) => c.username.toLowerCase()));
       const pending = users.filter(
         (u) => !cloudIds.has(u.id) && !cloudNames.has(u.username.toLowerCase())
       );
-      if (cloudUsers.length > 0 || users.length > 0) {
-        for (const u of pending) {
-          await saveUserToCloud(u);
+
+      // 3. Batch push any pending local accounts in a single roundtrip
+      if (pending.length > 0) {
+        try {
+          await batchSaveUsersToCloud(pending);
+          cloudUsers = await fetchAllUsersFromCloud();
+        } catch (pushErr) {
+          console.warn('[AuthContext] Batch push during refresh failed:', pushErr);
         }
       }
-      // 2. Pull: fetch latest cloud state and merge (keeping local passwords if cloud lacks them)
-      if (pending.length > 0) {
-        cloudUsers = await fetchAllUsersFromCloud();
-      }
+
+      // 4. Merge cloud state into local memory while protecting local passwords
       if (cloudUsers.length > 0) {
         setUsers((prev) => {
-          const prevMap = new Map(prev.map((u) => [u.id, u]));
-          const merged = cloudUsers.map((cu) => ({
-            ...cu,
-            password: cu.password || prevMap.get(cu.id)?.password || '',
-          }));
+          const prevMap = new Map<string, UserAccount>(prev.map((u) => [u.id, u]));
+          const merged: UserAccount[] = cloudUsers.map((cu) => {
+            const local = prevMap.get(cu.id);
+            if (!local) {
+              return cu;
+            }
+            const localIsNewer =
+              local.updatedAt && cu.updatedAt
+                ? new Date(local.updatedAt).getTime() > new Date(cu.updatedAt).getTime()
+                : false;
+            return {
+              ...(localIsNewer ? cu : local),
+              ...(localIsNewer ? local : cu),
+              id: cu.id,
+              password: cu.password || local.password || '',
+            };
+          });
           const mergedIds = new Set(merged.map((u) => u.id));
           return [...merged, ...prev.filter((u) => !mergedIds.has(u.id) && pending.some((p) => p.id === u.id))];
         });
       }
+
       setSyncStatus('synced');
     } catch (err) {
-      console.warn('[AuthContext] Manual refresh failed:', err);
-      setSyncStatus('error');
+      console.warn('[AuthContext] Manual refresh encountered unexpected error:', err);
+      setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error');
     }
   };
 
@@ -262,10 +325,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const addUser = async (newUser: Omit<UserAccount, 'id' | 'createdAt'>): Promise<UserAccount> => {
+    const now = new Date().toISOString();
     const account: UserAccount = {
       ...newUser,
       id: `USR-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
 
     // Optimistic local update
@@ -295,10 +360,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateUser = async (id: string, updates: Partial<UserAccount>): Promise<void> => {
     const targetUser = users.find((u) => u.id === id || u.username.toLowerCase() === id.toLowerCase());
     const targetId = targetUser ? targetUser.id : id;
+    const now = new Date().toISOString();
 
     const mergedUser: UserAccount = targetUser
-      ? { ...targetUser, ...updates }
-      : ({ ...updates, id: targetId } as UserAccount);
+      ? { ...targetUser, ...updates, updatedAt: now }
+      : ({ ...updates, id: targetId, updatedAt: now } as UserAccount);
 
     // 1. Optimistic local state update
     setUsers((prev) =>
@@ -337,7 +403,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err) {
       console.warn('[AuthContext] Failed to sync updated user to cloud (saved locally):', err);
       setSyncStatus('offline');
-      throw err;
     }
   };
 
