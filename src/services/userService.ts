@@ -1,5 +1,3 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, createUserWithEmailAndPassword, setPersistence, inMemoryPersistence } from 'firebase/auth';
 import {
   collection,
   doc,
@@ -271,27 +269,45 @@ export async function fetchAllUsersFromCloud(): Promise<UserAccount[]> {
 }
 
 /**
- * دالة لإنشاء مستخدم في Firebase Auth بدون تسجيل خروج المستخدم الحالي
- * ترجع المعرف (uid) الخاص بالمستخدم الجديد لربطه بقاعدة البيانات
+ * الحل الجذري: إنشاء المستخدم عبر REST API لتجنب تداخل جلسات الأدمن (Auth State Bleeding).
+ * هذا الكود يتصل بخوادم Google مباشرة دون التأثير على حالة تسجيل دخولك في المتصفح.
  */
 export async function createAuthUserAndGetUid(email: string, password: string): Promise<string> {
-  const secondaryApp = initializeApp(firebaseConfig, `SecondaryApp_${Date.now()}`);
-  const secondaryAuth = getAuth(secondaryApp);
+  // جلب مفتاح الـ API الخاص بمشروعك من الإعدادات المصدرة
+  const apiKey = firebaseConfig.apiKey;
   
+  if (!apiKey) {
+    throw new Error('مفتاح API الخاص بـ Firebase غير موجود. يرجى التحقق من إعدادات firebase-applet-config.json');
+  }
+
   try {
-    // فصل الذاكرة: نجعل التطبيق الثانوي يعمل في الذاكرة العشوائية فقط حتى لا يُنهي جلسة الأدمن
-    await setPersistence(secondaryAuth, inMemoryPersistence);
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: email,
+        password: password,
+        returnSecureToken: false
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      // معالجة الأخطاء القادمة من السيرفر (مثل البريد المكرر)
+      if (data.error && data.error.message === 'EMAIL_EXISTS') {
+        throw new Error('auth/email-already-in-use');
+      }
+      throw new Error(data.error?.message || 'فشل الاتصال بخادم المصادقة');
+    }
+
+    // إرجاع المعرف (localId أو UID) الخاص بالمستخدم الجديد
+    return data.localId;
     
-    // إنشاء الحساب
-    const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, password);
-    const uid = userCredential.user.uid;
-    
-    // تسجيل الخروج من التطبيق الثانوي (الآن لن يؤثر على التطبيق الأساسي)
-    await secondaryAuth.signOut();
-    
-    return uid;
   } catch (error: any) {
-    console.error('[userService] Failed to create auth user:', error);
+    console.error('[userService] Failed to create auth user via REST API:', error);
     throw error;
   }
 }
