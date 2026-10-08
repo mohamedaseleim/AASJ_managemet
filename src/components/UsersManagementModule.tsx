@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   UserPlus,
   Shield,
@@ -21,25 +21,29 @@ import { JOURNAL_SECTIONS, ROLE_INFO } from '../data/journalSections';
 import { DISCIPLINE_TRANSLATIONS } from '../translations';
 import { JournalDiscipline, UserAccount, UserRole } from '../types/journal';
 import { ChangePasswordModal } from './ChangePasswordModal';
+import { initialUsers } from '../data/initialUsers'; 
 
-// استيراد دوال السحابة المباشرة لضمان حفظ وتعديل وحذف البيانات في Firebase
+// استيراد الدوال السحابية
 import { 
+  subscribeToUsers,
   saveUserToCloud, 
-  updateUserInCloud, 
   deleteUserFromCloud 
 } from '../services/userService';
 
 export const UsersManagementModule: React.FC = () => {
-  // تم الاستغناء عن addUser, updateUser, deleteUser المحلية من useAuth
-  const { users, currentUser, syncStatus, refreshUsers } = useAuth();
+  const { currentUser } = useAuth();
   
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [isLocalMode, setIsLocalMode] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Modal States
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
   const [passwordChangeTarget, setPasswordChangeTarget] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Form State
   const [fullName, setFullName] = useState('');
@@ -52,6 +56,31 @@ export const UsersManagementModule: React.FC = () => {
   const [role, setRole] = useState<UserRole>('editor');
   const [assignedSection, setAssignedSection] = useState<JournalDiscipline>(JOURNAL_SECTIONS[0].discipline);
   const [isActive, setIsActive] = useState(true);
+
+  // مستمع التحديثات اللحظية للسحابة
+  useEffect(() => {
+    if (isLocalMode) {
+      setIsLoading(false);
+      return;
+    }
+    
+    setIsLoading(true);
+    const unsubscribe = subscribeToUsers(
+      (fetchedUsers) => {
+        setUsers(fetchedUsers);
+        setIsLoading(false);
+      },
+      initialUsers as UserAccount[],
+      (err) => {
+        console.error("خطأ في الاتصال بقاعدة البيانات:", err);
+        setIsLoading(false);
+      }
+    );
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [isLocalMode]);
 
   const handleOpenAdd = () => {
     setEditingUser(null);
@@ -88,15 +117,6 @@ export const UsersManagementModule: React.FC = () => {
     setEditingUser(null);
   };
 
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    try {
-      await refreshUsers();
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanUsername = username.toLowerCase().trim();
@@ -107,7 +127,6 @@ export const UsersManagementModule: React.FC = () => {
       return;
     }
 
-    // Check duplicate username (exclude currently editing user)
     const isDuplicate = users.some((u) => {
       if (editingUser && u.id === editingUser.id) return false;
       return u.username.toLowerCase().trim() === cleanUsername;
@@ -121,8 +140,9 @@ export const UsersManagementModule: React.FC = () => {
     setIsSaving(true);
     try {
       if (editingUser) {
-        // تحديث الحساب في السحابة مباشرة
-        const updates: Partial<UserAccount> = {
+        // بناء كائن المستخدم بالكامل ودمجه، لتجنب مشاكل حذف الحقول من المستندات غير المكتملة
+        const fullUser: UserAccount = {
+          ...editingUser,
           fullName: cleanFullName,
           username: cleanUsername,
           email: email.trim(),
@@ -134,13 +154,16 @@ export const UsersManagementModule: React.FC = () => {
           isActive,
           updatedAt: new Date().toISOString(),
         };
+        
         if (password.trim()) {
-          updates.password = password.trim();
+          fullUser.password = password.trim();
         }
-        await updateUserInCloud(editingUser.id, updates);
+        
+        // نستخدم saveUserToCloud بدلاً من updateUserInCloud لمنع تمرير أمر deleteField()
+        await saveUserToCloud(fullUser);
       } else {
-        // إنشاء حساب جديد ورفعه للسحابة مباشرة
-        const newUserId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // إنشاء مستخدم جديد
+        const newUserId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const newUser: UserAccount = {
           id: newUserId,
           fullName: cleanFullName,
@@ -160,9 +183,10 @@ export const UsersManagementModule: React.FC = () => {
 
       setIsModalOpen(false);
       setEditingUser(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error('[UsersManagement] Error saving user account:', err);
-      alert('حدث خطأ أثناء حفظ بيانات المستخدم في السحابة. تحقق من اتصالك.');
+      // إظهار سبب الخطأ بالتفصيل لتسهيل التشخيص
+      alert(`حدث خطأ أثناء حفظ بيانات المستخدم في السحابة: ${err.message || 'تأكد من الصلاحيات والاتصال'}`);
     } finally {
       setIsSaving(false);
     }
@@ -196,42 +220,26 @@ export const UsersManagementModule: React.FC = () => {
 
           <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
             {/* Cloud Sync Status Indicator */}
-            <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium ${
-                syncStatus === 'synced'
-                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                  : syncStatus === 'syncing'
-                  ? 'bg-amber-50 text-amber-800 border-amber-200'
-                  : syncStatus === 'error'
-                  ? 'bg-rose-50 text-rose-800 border-rose-200'
-                  : 'bg-slate-50 text-slate-700 border-slate-200'
-              }`}
-              title="حالة المزامنة السحابية الفورية للحسابات بين مختلف الأجهزة والمتصفحات"
-            >
-              {syncStatus === 'syncing' ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-700" />
-              ) : syncStatus === 'synced' ? (
-                <Cloud className="w-3.5 h-3.5 text-emerald-700" />
-              ) : syncStatus === 'offline' ? (
-                <CloudOff className="w-3.5 h-3.5 text-slate-500" />
-              ) : (
-                <CloudOff className="w-3.5 h-3.5 text-rose-600" />
-              )}
-              <span>
-                {syncStatus === 'synced' && 'متزامن سحابياً (كافة الأجهزة)'}
-                {syncStatus === 'syncing' && 'جارٍ المزامنة السحابية...'}
-                {syncStatus === 'offline' && 'وضع محلي (دون اتصال)'}
-                {syncStatus === 'error' && 'تنبيه اتصال سحابي'}
-              </span>
-            </div>
-
             <button
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-              className="p-2 text-slate-600 hover:text-emerald-800 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-              title="مزامنة فورية وتحديث قائمة المستخدمين من السحابة الآن"
+              onClick={() => setIsLocalMode(!isLocalMode)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
+                !isLocalMode
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+              }`}
+              title="تبديل وضع الاتصال بقاعدة البيانات"
             >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-emerald-700' : ''}`} />
+              {!isLocalMode ? (
+                <>
+                  <Cloud className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>متزامن سحابياً (كافة الأجهزة)</span>
+                </>
+              ) : (
+                <>
+                  <CloudOff className="w-3.5 h-3.5 text-slate-500" />
+                  <span>وضع محلي (دون اتصال)</span>
+                </>
+              )}
             </button>
 
             <button
@@ -245,12 +253,14 @@ export const UsersManagementModule: React.FC = () => {
         </div>
 
         {/* Cloud sync tip banner */}
-        <div className="mt-4 p-2.5 bg-emerald-50/70 border border-emerald-100 rounded-lg flex items-center gap-2 text-xs text-emerald-900">
-          <Cloud className="w-4 h-4 text-emerald-700 shrink-0" />
-          <span>
-            <strong>المزامنة السحابية الموحدة:</strong> أي مستخدم يتم إنشاؤه، تعديله أو حذفه ينعكس مباشرة على قاعدة البيانات السحابية (Cloud Firestore)، ويمكن للمستخدم الدخول فوراً من أي جهاز أو متصفح آخر.
-          </span>
-        </div>
+        {!isLocalMode && (
+          <div className="mt-4 p-2.5 bg-emerald-50/70 border border-emerald-100 rounded-lg flex items-center gap-2 text-xs text-emerald-900">
+            <RefreshCw className="w-4 h-4 text-emerald-700 shrink-0 animate-spin-slow" />
+            <span>
+              <strong>المزامنة السحابية الموحدة:</strong> أي مستخدم يتم إنشاؤه، تعديله أو حذفه ينعكس مباشرة على قاعدة البيانات السحابية (Cloud Firestore).
+            </span>
+          </div>
+        )}
 
         {/* Filter and Search Bar */}
         <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -297,100 +307,107 @@ export const UsersManagementModule: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs">
-              {filteredUsers.map((u) => {
-                const roleMeta = ROLE_INFO[u.role];
-                return (
-                  <tr key={u.id} className="hover:bg-slate-50 transition-colors">
-                    {/* User Info */}
-                    <td className="py-3.5 px-4">
-                      <div className="font-bold text-slate-900">{u.fullName}</div>
-                      <div className="text-[11px] text-slate-500 font-mono flex items-center gap-1.5 mt-0.5">
-                        <span>@{u.username}</span>
-                        <span>·</span>
-                        <span className="text-slate-400">حماية الحساب: <strong className="text-slate-600 font-mono">••••••••</strong></span>
-                      </div>
-                      <div className="text-[10px] text-slate-400 truncate max-w-xs">{u.affiliation}</div>
-                    </td>
-
-                    {/* Role Badge */}
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      <span className={`inline-block px-2.5 py-1 rounded-md text-[11px] border font-medium ${roleMeta.badgeColor}`}>
-                        {roleMeta.titleAr}
-                      </span>
-                    </td>
-
-                    {/* Assigned Section */}
-                    <td className="py-3.5 px-4 text-slate-600 max-w-xs">
-                      {u.assignedSection ? (
-                        <span className="font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded text-[11px] border border-emerald-200 truncate block">
-                          {DISCIPLINE_TRANSLATIONS[u.assignedSection]?.ar || u.assignedSection}
+              {isLoading ? (
+                <tr>
+                  <td colSpan={6} className="text-center py-10 text-slate-500">
+                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-emerald-600" />
+                    جارٍ المزامنة مع السحابة...
+                  </td>
+                </tr>
+              ) : filteredUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="text-center py-10 text-slate-500">
+                    لا يوجد حسابات متطابقة.
+                  </td>
+                </tr>
+              ) : (
+                filteredUsers.map((u) => {
+                  const roleMeta = ROLE_INFO[u.role];
+                  return (
+                    <tr key={u.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="py-3.5 px-4">
+                        <div className="font-bold text-slate-900">{u.fullName}</div>
+                        <div className="text-[11px] text-slate-500 font-mono flex items-center gap-1.5 mt-0.5">
+                          <span>@{u.username}</span>
+                          <span>·</span>
+                          <span className="text-slate-400">حماية الحساب: <strong className="text-slate-600 font-mono">••••••••</strong></span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 truncate max-w-xs">{u.affiliation}</div>
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <span className={`inline-block px-2.5 py-1 rounded-md text-[11px] border font-medium ${roleMeta?.badgeColor || 'bg-gray-100 border-gray-200 text-gray-700'}`}>
+                          {roleMeta?.titleAr || u.role}
                         </span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-
-                    {/* Contact */}
-                    <td className="py-3.5 px-4 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                      <div>{u.email}</div>
-                      <div className="text-slate-400">{u.phone || '—'}</div>
-                    </td>
-
-                    {/* Active Status */}
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {u.isActive ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[11px]">
-                          <CheckCircle className="w-3.5 h-3.5" />
-                          <span>نشط</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-rose-600 font-semibold text-[11px]">
-                          <XCircle className="w-3.5 h-3.5" />
-                          <span>معطل</span>
-                        </span>
-                      )}
-                    </td>
-
-                    {/* Actions */}
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button
-                          onClick={() => setPasswordChangeTarget(u.username)}
-                          className="p-1.5 text-slate-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
-                          title="تغيير كلمة المرور لهذا الحساب"
-                        >
-                          <Key className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleOpenEdit(u)}
-                          className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
-                          title="تعديل الحساب"
-                        >
-                          <Edit className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={async () => {
-                            if (window.confirm(`هل أنت متأكد من حذف الحساب "${u.username}" نهائياً من كافة الأجهزة والسحابة؟`)) {
-                              try {
-                                // حذف الحساب من السحابة مباشرة
-                                await deleteUserFromCloud(u.id);
-                              } catch (err) {
-                                console.error('Delete error', err);
-                                alert('حدث خطأ أثناء الحذف من السحابة.');
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-600 max-w-xs">
+                        {u.assignedSection ? (
+                          <span className="font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded text-[11px] border border-emerald-200 truncate block">
+                            {DISCIPLINE_TRANSLATIONS[u.assignedSection]?.ar || u.assignedSection}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 font-mono text-[11px] text-slate-600 whitespace-nowrap">
+                        <div>{u.email}</div>
+                        <div className="text-slate-400">{u.phone || '—'}</div>
+                      </td>
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {u.isActive ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[11px]">
+                            <CheckCircle className="w-3.5 h-3.5" />
+                            <span>نشط</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-rose-600 font-semibold text-[11px]">
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>معطل</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => setPasswordChangeTarget(u.username)}
+                            className="p-1.5 text-slate-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                            title="تغيير كلمة المرور لهذا الحساب"
+                          >
+                            <Key className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleOpenEdit(u)}
+                            className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                            title="تعديل الحساب"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (isLocalMode) {
+                                alert("يجب تفعيل الاتصال بالسحابة أولاً لحذف المستخدم.");
+                                return;
                               }
-                            }
-                          }}
-                          disabled={currentUser?.id === u.id}
-                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-30 rounded-lg transition-colors cursor-pointer"
-                          title="حذف الحساب"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+                              if (window.confirm(`هل أنت متأكد من حذف الحساب "${u.username}" نهائياً من كافة الأجهزة والسحابة؟`)) {
+                                try {
+                                  await deleteUserFromCloud(u.id);
+                                } catch (err) {
+                                  console.error('Delete error', err);
+                                  alert('حدث خطأ أثناء الحذف من السحابة.');
+                                }
+                              }
+                            }}
+                            disabled={currentUser?.id === u.id}
+                            className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-30 rounded-lg transition-colors cursor-pointer"
+                            title="حذف الحساب"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -587,7 +604,7 @@ export const UsersManagementModule: React.FC = () => {
           </div>
         </div>
       )}
-      {/* Change Password Modal */}
+      
       <ChangePasswordModal
         isOpen={Boolean(passwordChangeTarget)}
         onClose={() => setPasswordChangeTarget(null)}
