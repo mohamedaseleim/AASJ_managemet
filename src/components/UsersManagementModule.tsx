@@ -22,11 +22,12 @@ import { DISCIPLINE_TRANSLATIONS } from '../translations';
 import { JournalDiscipline, UserAccount, UserRole } from '../types/journal';
 import { ChangePasswordModal } from './ChangePasswordModal';
 
-// استيراد الدوال السحابية
+// استيراد الدوال السحابية شاملة المصادقة الموحدة
 import { 
   subscribeToUsers,
   saveUserToCloud, 
-  deleteUserFromCloud 
+  deleteUserFromCloud,
+  createAuthUserAndGetUid
 } from '../services/userService';
 
 export const UsersManagementModule: React.FC = () => {
@@ -56,7 +57,6 @@ export const UsersManagementModule: React.FC = () => {
   const [assignedSection, setAssignedSection] = useState<JournalDiscipline>(JOURNAL_SECTIONS[0].discipline);
   const [isActive, setIsActive] = useState(true);
 
-  // مستمع التحديثات اللحظية للسحابة
   useEffect(() => {
     if (isLocalMode) {
       setIsLoading(false);
@@ -69,7 +69,7 @@ export const UsersManagementModule: React.FC = () => {
         setUsers(fetchedUsers);
         setIsLoading(false);
       },
-      [], // مصفوفة فارغة لتجاوز خطأ الـ Build
+      [], 
       (err) => {
         console.error("خطأ في الاتصال بقاعدة البيانات:", err);
         setIsLoading(false);
@@ -139,7 +139,6 @@ export const UsersManagementModule: React.FC = () => {
     setIsSaving(true);
     try {
       if (editingUser) {
-        // بناء كائن المستخدم بالكامل ودمجه، لتجنب مشاكل حذف الحقول من المستندات غير المكتملة
         const fullUser: UserAccount = {
           ...editingUser,
           fullName: cleanFullName,
@@ -160,10 +159,18 @@ export const UsersManagementModule: React.FC = () => {
         
         await saveUserToCloud(fullUser);
       } else {
-        // إنشاء مستخدم جديد
-        const newUserId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        // إنشاء الحساب في المصادقة واستخراج الـ UID لتوحيد المعرفات مع قواعد الأمان
+        let newUserId = '';
+        try {
+          newUserId = await createAuthUserAndGetUid(email.trim(), password.trim());
+        } catch (authError: any) {
+          alert(`فشل إنشاء الحساب في نظام المصادقة: ${authError.message}`);
+          setIsSaving(false);
+          return;
+        }
+
         const newUser: UserAccount = {
-          id: newUserId,
+          id: newUserId, // الـ UID الفعلي من Firebase Auth
           fullName: cleanFullName,
           username: cleanUsername,
           password: password.trim(),
@@ -216,7 +223,6 @@ export const UsersManagementModule: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-            {/* Cloud Sync Status Indicator */}
             <button
               onClick={() => setIsLocalMode(!isLocalMode)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
@@ -249,7 +255,6 @@ export const UsersManagementModule: React.FC = () => {
           </div>
         </div>
 
-        {/* Cloud sync tip banner */}
         {!isLocalMode && (
           <div className="mt-4 p-2.5 bg-emerald-50/70 border border-emerald-100 rounded-lg flex items-center gap-2 text-xs text-emerald-900">
             <RefreshCw className="w-4 h-4 text-emerald-700 shrink-0 animate-spin-slow" />
@@ -259,7 +264,6 @@ export const UsersManagementModule: React.FC = () => {
           </div>
         )}
 
-        {/* Filter and Search Bar */}
         <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute top-2.5 right-3 text-slate-400" />
@@ -289,7 +293,6 @@ export const UsersManagementModule: React.FC = () => {
         </div>
       </div>
 
-      {/* Users Table */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-right border-collapse">
@@ -410,7 +413,6 @@ export const UsersManagementModule: React.FC = () => {
         </div>
       </div>
 
-      {/* Add / Edit User Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-slate-900/70 backdrop-blur-xs p-2 sm:p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden my-1 sm:my-auto flex flex-col max-h-[96dvh] sm:max-h-[94vh]">
@@ -479,7 +481,6 @@ export const UsersManagementModule: React.FC = () => {
                 </div>
               </div>
 
-              {/* Role Selection */}
               <div>
                 <label className="text-slate-700 font-semibold block mb-1">
                   الدور الوظيفي في المجلة (Role):
@@ -506,7 +507,6 @@ export const UsersManagementModule: React.FC = () => {
                 </p>
               </div>
 
-              {/* If Executive Editor: Select the Section */}
               {role === 'executive_editor' && (
                 <div className="p-3 bg-sky-50 border border-sky-200 rounded-lg space-y-1">
                   <label className="text-sky-900 font-bold block mb-1">
