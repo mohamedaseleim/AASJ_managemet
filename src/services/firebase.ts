@@ -6,7 +6,10 @@ import {
   persistentMultipleTabManager,
   getFirestore,
 } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import config from '../../firebase-applet-config.json';
+
+// تصدير الإعدادات لاستخدامها لاحقاً لإنشاء تطبيق مصادقة ثانوي
+export const firebaseConfig = config;
 
 // Initialize Firebase app once
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
