@@ -22,8 +22,16 @@ import { DISCIPLINE_TRANSLATIONS } from '../translations';
 import { JournalDiscipline, UserAccount, UserRole } from '../types/journal';
 import { ChangePasswordModal } from './ChangePasswordModal';
 
+// استيراد دوال السحابة المباشرة لضمان حفظ وتعديل وحذف البيانات في Firebase
+import { 
+  saveUserToCloud, 
+  updateUserInCloud, 
+  deleteUserFromCloud 
+} from '../services/userService';
+
 export const UsersManagementModule: React.FC = () => {
-  const { users, addUser, updateUser, deleteUser, currentUser, syncStatus, refreshUsers } = useAuth();
+  // تم الاستغناء عن addUser, updateUser, deleteUser المحلية من useAuth
+  const { users, currentUser, syncStatus, refreshUsers } = useAuth();
   
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
@@ -113,6 +121,7 @@ export const UsersManagementModule: React.FC = () => {
     setIsSaving(true);
     try {
       if (editingUser) {
+        // تحديث الحساب في السحابة مباشرة
         const updates: Partial<UserAccount> = {
           fullName: cleanFullName,
           username: cleanUsername,
@@ -123,13 +132,17 @@ export const UsersManagementModule: React.FC = () => {
           role,
           assignedSection: role === 'executive_editor' ? assignedSection : undefined,
           isActive,
+          updatedAt: new Date().toISOString(),
         };
         if (password.trim()) {
           updates.password = password.trim();
         }
-        await updateUser(editingUser.id, updates);
+        await updateUserInCloud(editingUser.id, updates);
       } else {
-        await addUser({
+        // إنشاء حساب جديد ورفعه للسحابة مباشرة
+        const newUserId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const newUser: UserAccount = {
+          id: newUserId,
           fullName: cleanFullName,
           username: cleanUsername,
           password: password.trim(),
@@ -140,14 +153,16 @@ export const UsersManagementModule: React.FC = () => {
           role,
           assignedSection: role === 'executive_editor' ? assignedSection : undefined,
           isActive,
-        });
+          createdAt: new Date().toISOString(),
+        };
+        await saveUserToCloud(newUser);
       }
 
       setIsModalOpen(false);
       setEditingUser(null);
     } catch (err) {
       console.error('[UsersManagement] Error saving user account:', err);
-      alert('حدث خطأ أثناء حفظ بيانات المستخدم.');
+      alert('حدث خطأ أثناء حفظ بيانات المستخدم في السحابة. تحقق من اتصالك.');
     } finally {
       setIsSaving(false);
     }
@@ -356,7 +371,13 @@ export const UsersManagementModule: React.FC = () => {
                         <button
                           onClick={async () => {
                             if (window.confirm(`هل أنت متأكد من حذف الحساب "${u.username}" نهائياً من كافة الأجهزة والسحابة؟`)) {
-                              await deleteUser(u.id);
+                              try {
+                                // حذف الحساب من السحابة مباشرة
+                                await deleteUserFromCloud(u.id);
+                              } catch (err) {
+                                console.error('Delete error', err);
+                                alert('حدث خطأ أثناء الحذف من السحابة.');
+                              }
                             }
                           }}
                           disabled={currentUser?.id === u.id}
