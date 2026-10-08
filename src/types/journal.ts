@@ -279,6 +279,7 @@ export interface UserAccount {
   phone?: string;
   isActive: boolean;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface JournalSectionDetails {

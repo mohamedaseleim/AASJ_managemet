@@ -145,8 +145,9 @@ export const UsersManagementModule: React.FC = () => {
 
       setIsModalOpen(false);
       setEditingUser(null);
-    } catch {
-      alert('تم حفظ التعديلات محلياً، لكن تعذرت مزامنتها مع السحابة. يرجى التحقق من الاتصال والمحاولة مرة أخرى.');
+    } catch (err) {
+      console.error('[UsersManagement] Error saving user account:', err);
+      alert('حدث خطأ أثناء حفظ بيانات المستخدم.');
     } finally {
       setIsSaving(false);
     }

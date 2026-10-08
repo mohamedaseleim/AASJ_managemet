@@ -20,9 +20,13 @@ import { UserAccount } from '../types/journal';
  */
 export async function withTimeout<T>(
   promise: Promise<T>,
-  timeoutMs: number = 3500,
+  timeoutMs: number = 7000,
   fallbackMsg: string = 'Operation timed out'
 ): Promise<T> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error(`Device is offline (${fallbackMsg})`);
+  }
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<T>((_, reject) => {
     timer = setTimeout(() => {
@@ -76,6 +80,7 @@ export function docToUserAccount(id: string, data: Record<string, any>): UserAcc
     phone: data.phone || undefined,
     isActive: data.isActive !== false,
     createdAt: data.createdAt || new Date().toISOString(),
+    updatedAt: data.updatedAt || undefined,
   };
 }
 
@@ -83,22 +88,17 @@ export function docToUserAccount(id: string, data: Record<string, any>): UserAcc
  * Seeds Firestore with default users if the collection is empty.
  */
 export async function seedUsersIfEmpty(defaultUsers: UserAccount[]): Promise<void> {
+  if (!defaultUsers || defaultUsers.length === 0) return;
   try {
-    const snap = await withTimeout(
-      getDocs(collection(db, 'users')),
-      3500,
-      'seedUsersIfEmpty getDocs'
-    );
-    if (snap.empty && defaultUsers.length > 0) {
-      console.info('[userService] Seeding Firestore with initial users...');
-      const batch = writeBatch(db);
-      for (const user of defaultUsers) {
-        batch.set(doc(db, 'users', user.id), sanitizeForFirestore(user, false));
-      }
-      await withTimeout(batch.commit(), 4000, 'seedUsersIfEmpty batch commit');
+    console.info('[userService] Seeding Firestore with initial users...');
+    const batch = writeBatch(db);
+    for (const user of defaultUsers) {
+      batch.set(doc(db, 'users', user.id), sanitizeForFirestore(user, false));
     }
+    await withTimeout(batch.commit(), 8000, 'seedUsersIfEmpty batch commit');
+    console.info('[userService] Successfully seeded initial users in Firestore.');
   } catch (err) {
-    console.warn('[userService] Failed to check or seed initial users:', err);
+    console.warn('[userService] Failed to seed initial users:', err);
   }
 }
 
@@ -118,7 +118,8 @@ export function subscribeToUsers(
       usersCollection,
       async (snapshot) => {
         if (snapshot.empty && defaultUsers.length > 0) {
-          // If Firestore is empty, seed it with the default users
+          // If Firestore is empty, surface the default users immediately, then seed in background
+          onUsersChanged(defaultUsers);
           await seedUsersIfEmpty(defaultUsers);
           return;
         }
@@ -150,12 +151,30 @@ export function subscribeToUsers(
 export async function saveUserToCloud(user: UserAccount): Promise<void> {
   try {
     await withTimeout(
-      setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user, true), { merge: true }),
-      3500,
+      setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user, false), { merge: true }),
+      7000,
       `saveUserToCloud(${user.id})`
     );
   } catch (err: any) {
     console.error('[userService] Failed to save user to Firestore:', err?.message || err);
+    throw err;
+  }
+}
+
+/**
+ * Saves multiple users in a single Firestore writeBatch.
+ * Highly efficient for synchronization and seed operations.
+ */
+export async function batchSaveUsersToCloud(usersToSave: UserAccount[]): Promise<void> {
+  if (!usersToSave || usersToSave.length === 0) return;
+  try {
+    const batch = writeBatch(db);
+    for (const user of usersToSave) {
+      batch.set(doc(db, 'users', user.id), sanitizeForFirestore(user, false), { merge: true });
+    }
+    await withTimeout(batch.commit(), 8000, `batchSaveUsersToCloud(${usersToSave.length} users)`);
+  } catch (err: any) {
+    console.error('[userService] Failed batch save to Firestore:', err?.message || err);
     throw err;
   }
 }
@@ -167,7 +186,7 @@ export async function updateUserInCloud(id: string, updates: Partial<UserAccount
   try {
     await withTimeout(
       setDoc(doc(db, 'users', id), sanitizeForFirestore(updates, true), { merge: true }),
-      3500,
+      7000,
       `updateUserInCloud(${id})`
     );
   } catch (err: any) {
@@ -183,7 +202,7 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
   try {
     await withTimeout(
       deleteDoc(doc(db, 'users', id)),
-      3500,
+      7000,
       `deleteUserFromCloud(${id})`
     );
   } catch (err: any) {
@@ -202,7 +221,7 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
     const q = query(collection(db, 'users'), where('username', '==', cleanUsername));
     const snap = await withTimeout(
       getDocs(q),
-      3500,
+      5000,
       'findUserInCloud query'
     );
     if (!snap.empty) {
@@ -213,7 +232,7 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
     // Fallback: check all docs in case username casing or index is pending
     const allSnap = await withTimeout(
       getDocs(collection(db, 'users')),
-      3500,
+      5000,
       'findUserInCloud fallback'
     );
     for (const d of allSnap.docs) {
@@ -230,19 +249,21 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
 
 /**
  * Fetches all users directly from Firestore.
+ * Throws if the network fails so callers can distinguish between network failure and empty collection.
  */
 export async function fetchAllUsersFromCloud(): Promise<UserAccount[]> {
   try {
     const snap = await withTimeout(
       getDocs(collection(db, 'users')),
-      3500,
+      7000,
       'fetchAllUsersFromCloud'
     );
     if (!snap.empty) {
       return snap.docs.map((d) => docToUserAccount(d.id, d.data()));
     }
+    return [];
   } catch (err) {
     console.warn('[userService] Failed to fetch users from Firestore:', err);
+    throw err;
   }
-  return [];
 }
