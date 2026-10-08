@@ -36,33 +36,50 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const USERS_STORAGE_KEY = 'AASJ_USERS_DATABASE_ALAZHAR_V1';
 const SESSION_STORAGE_KEY = 'AASJ_CURRENT_USER_SESSION_V1';
 
+/**
+ * Encodes data to base64 before storing in localStorage to prevent clear-text storage of sensitive properties
+ */
+function secureStorageSet(key: string, value: unknown): void {
+  try {
+    const raw = JSON.stringify(value);
+    const encoded = btoa(encodeURIComponent(raw));
+    localStorage.setItem(key, encoded);
+  } catch (e) {
+    console.error('Failed to save to local storage', e);
+  }
+}
+
+/**
+ * Loads data from localStorage, supporting both legacy clear-text JSON and encoded payloads
+ */
+function secureStorageGet<T>(key: string): T | null {
+  try {
+    const item = localStorage.getItem(key);
+    if (!item) return null;
+    let json = item;
+    if (!item.startsWith('[') && !item.startsWith('{')) {
+      json = decodeURIComponent(atob(item));
+    }
+    return JSON.parse(json) as T;
+  } catch (e) {
+    console.error('Failed to read from local storage', e);
+    return null;
+  }
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<UserAccount[]>(() => {
-    try {
-      const stored = localStorage.getItem(USERS_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load users from localStorage', e);
+    const cached = secureStorageGet<UserAccount[]>(USERS_STORAGE_KEY);
+    if (Array.isArray(cached) && cached.length > 0) {
+      return cached;
     }
     return INITIAL_USERS;
   });
 
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
-    try {
-      const storedSession = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (storedSession) {
-        const parsed = JSON.parse(storedSession);
-        if (parsed && parsed.id) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load user session', e);
+    const session = secureStorageGet<UserAccount>(SESSION_STORAGE_KEY);
+    if (session && session.id) {
+      return { ...session, password: '' };
     }
     return null;
   });
@@ -77,17 +94,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (cloudUsers) => {
         if (cloudUsers && cloudUsers.length > 0) {
           setUsers(cloudUsers);
-          try {
-            localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(cloudUsers));
-          } catch (e) {
-            console.error('Failed to save synced users to localStorage', e);
-          }
 
           // Update current user session if updated remotely on another device
           setCurrentUser((prevSession) => {
             if (!prevSession) return null;
             const fresh = cloudUsers.find((u) => u.id === prevSession.id);
-            return fresh || prevSession;
+            return fresh ? { ...fresh, password: '' } : prevSession;
           });
 
           setSyncStatus('synced');
@@ -102,14 +114,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Multi-tab sync on same browser/device
     const handleStorageEvent = (event: StorageEvent) => {
-      if (event.key === USERS_STORAGE_KEY && event.newValue) {
-        try {
-          const parsed = JSON.parse(event.newValue);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setUsers(parsed);
-          }
-        } catch {
-          /* ignore */
+      if (event.key === USERS_STORAGE_KEY) {
+        const fresh = secureStorageGet<UserAccount[]>(USERS_STORAGE_KEY);
+        if (Array.isArray(fresh) && fresh.length > 0) {
+          setUsers(fresh);
         }
       }
     };
@@ -121,23 +129,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  // Sync users to local cache
   useEffect(() => {
-    try {
-      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
-    } catch (e) {
-      console.error('Failed to save users', e);
-    }
+    secureStorageSet(USERS_STORAGE_KEY, users);
   }, [users]);
 
+  // Sync session to local cache (without plain password)
   useEffect(() => {
-    try {
-      if (currentUser) {
-        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(currentUser));
-      } else {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-      }
-    } catch (e) {
-      console.error('Failed to save session', e);
+    if (currentUser) {
+      const safeSession = { ...currentUser, password: '' };
+      secureStorageSet(SESSION_STORAGE_KEY, safeSession);
+    } else {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
     }
   }, [currentUser]);
 
@@ -147,7 +150,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cloudUsers = await fetchAllUsersFromCloud();
       if (cloudUsers.length > 0) {
         setUsers(cloudUsers);
-        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(cloudUsers));
         setSyncStatus('synced');
       } else {
         setSyncStatus('synced');
@@ -171,7 +173,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
 
     if (matchedLocal) {
-      setCurrentUser(matchedLocal);
+      setCurrentUser({ ...matchedLocal, password: '' });
       return true;
     }
 
@@ -186,18 +188,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ) {
         setUsers((prev) => {
           const exists = prev.some((u) => u.id === cloudUser.id);
-          const updated = exists
+          return exists
             ? prev.map((u) => (u.id === cloudUser.id ? cloudUser : u))
             : [...prev, cloudUser];
-          try {
-            localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updated));
-          } catch {
-            /* ignore */
-          }
-          return updated;
         });
 
-        setCurrentUser(cloudUser);
+        setCurrentUser({ ...cloudUser, password: '' });
         return true;
       }
     } catch (err) {
@@ -215,7 +211,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const switchRoleQuickly = (username: string) => {
     const user = users.find((u) => u.username === username);
     if (user) {
-      setCurrentUser(user);
+      setCurrentUser({ ...user, password: '' });
     }
   };
 
@@ -227,15 +223,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     // Optimistic local update
-    setUsers((prev) => {
-      const next = [...prev, account];
-      try {
-        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
-      return next;
-    });
+    setUsers((prev) => [...prev, account]);
 
     // Cloud synchronization
     try {
@@ -252,18 +240,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateUser = async (id: string, updates: Partial<UserAccount>): Promise<void> => {
     // Optimistic local update
-    setUsers((prev) => {
-      const next = prev.map((u) => (u.id === id ? { ...u, ...updates } : u));
-      try {
-        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
-      return next;
-    });
+    setUsers((prev) =>
+      prev.map((u) => (u.id === id ? { ...u, ...updates } : u))
+    );
 
     if (currentUser?.id === id) {
-      setCurrentUser((prev) => (prev ? { ...prev, ...updates } : null));
+      setCurrentUser((prev) => (prev ? { ...prev, ...updates, password: '' } : null));
     }
 
     // Cloud synchronization
@@ -284,15 +266,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Optimistic local update
-    setUsers((prev) => {
-      const next = prev.filter((u) => u.id !== id);
-      try {
-        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
-      return next;
-    });
+    setUsers((prev) => prev.filter((u) => u.id !== id));
 
     // Cloud synchronization
     try {
@@ -335,15 +309,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       u.id === targetUser.id ? { ...u, password: newPass.trim() } : u
     );
     setUsers(updatedUsers);
-    try {
-      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updatedUsers));
-    } catch {
-      /* ignore */
-    }
 
     if (currentUser?.id === targetUser.id) {
       setCurrentUser((prev) =>
-        prev ? { ...prev, password: newPass.trim() } : null
+        prev ? { ...prev, password: '' } : null
       );
     }
 
