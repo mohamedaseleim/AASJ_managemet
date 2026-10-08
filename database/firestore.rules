@@ -34,9 +34,10 @@ service cloud.firestore {
     }
 
     // 1. قواعد مجموعة المستخدمين (Users Collection)
-    // تتيح التحقق من بيانات الدخول والمزامنة الحية الفورية بين مختلف الأجهزة والمتصفحات
+    // The client signs in anonymously before accessing Firestore. Never leave
+    // this collection publicly writable, even though the UI has its own roles.
     match /users/{userId} {
-      allow read, write: if true;
+      allow read, write: if isAuthenticated();
     }
 
     // 2. قواعد الأبحاث والمخطوطات (Manuscripts Collection)

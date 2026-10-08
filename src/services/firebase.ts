@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, setPersistence, browserLocalPersistence, signInAnonymously } from 'firebase/auth';
+import { getAuth, setPersistence, browserLocalPersistence, signInAnonymously, User } from 'firebase/auth';
 import {
   initializeFirestore,
   persistentLocalCache,
@@ -16,6 +16,26 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 
 // Firebase services
 export const auth = getAuth(app);
+
+// Firestore rules evaluate request.auth. Wait for the anonymous session before
+// any cloud operation so the first read/write is not sent unauthenticated.
+let anonymousSignInPromise: Promise<User> | null = null;
+
+export async function ensureFirebaseAuth(): Promise<User> {
+  await auth.authStateReady();
+
+  if (auth.currentUser) return auth.currentUser;
+
+  if (!anonymousSignInPromise) {
+    anonymousSignInPromise = signInAnonymously(auth)
+      .then((credential) => credential.user)
+      .finally(() => {
+        anonymousSignInPromise = null;
+      });
+  }
+
+  return anonymousSignInPromise;
+}
 
 // Initialize Firestore with multi-tab persistent cache for resilient offline support
 export const db = (() => {
@@ -39,7 +59,7 @@ setPersistence(auth, browserLocalPersistence).catch((e) => {
 if (typeof window !== 'undefined') {
   auth.onAuthStateChanged((user) => {
     if (!user) {
-      signInAnonymously(auth).catch(() => {
+      ensureFirebaseAuth().catch(() => {
         // Anonymous sign-in may not be enabled in console, proceed without error
       });
     }

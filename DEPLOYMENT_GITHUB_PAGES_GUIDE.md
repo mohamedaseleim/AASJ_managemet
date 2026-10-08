@@ -270,7 +270,14 @@ jobs:
 
 #### تطبيق قواعد الأمان المعتمدة (Firestore Security Rules):
 يوفر المشروع ملف قواعد أمان متقدم وكامل في المسار `database/firestore.rules`.
-انسخ محتويات هذا الملف والصقها في تبويب **Rules** في Firestore Console ثم اضغط **Publish**.
+ينتظر التطبيق تسجيل دخول Firebase مجهولاً قبل تنفيذ أي قراءة أو كتابة، لذلك يجب تفعيل مزود **Anonymous** من **Authentication -> Sign-in method**.
+
+يمكن نشر القواعد مباشرة من جذر المشروع بعد تثبيت Firebase CLI وتسجيل الدخول:
+```bash
+npx firebase-tools login
+npx firebase-tools deploy --only firestore:rules --project aasj-azhar-journal
+```
+أو انسخ محتويات الملف والصقها في تبويب **Rules** في Firestore Console ثم اضغط **Publish**.
 تحمي هذه القواعد بيانات الأبحاث ولا تسمح إلا للقيادات التحريرية بالاطلاع على التفاصيل السرية وتقييمات المحكمين.
 
 #### تفعيل المصادقة (Firebase Authentication):

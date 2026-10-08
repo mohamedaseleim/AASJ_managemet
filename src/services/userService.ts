@@ -11,7 +11,7 @@ import {
   writeBatch,
   Unsubscribe,
 } from 'firebase/firestore';
-import { db, firebaseConfig } from './firebase';
+import { db, firebaseConfig, ensureFirebaseAuth } from './firebase';
 import { UserAccount } from '../types/journal';
 
 /**
@@ -111,38 +111,41 @@ export function subscribeToUsers(
   defaultUsers: UserAccount[] = [],
   onError?: (error: any) => void
 ): Unsubscribe {
-  try {
-    const usersCollection = collection(db, 'users');
+  let cancelled = false;
+  let unsubscribe: Unsubscribe = () => {};
 
-    const unsubscribe = onSnapshot(
-      usersCollection,
-      async (snapshot) => {
-        if (snapshot.empty && defaultUsers.length > 0) {
-          // If Firestore is empty, surface the default users immediately, then seed in background
-          onUsersChanged(defaultUsers);
-          await seedUsersIfEmpty(defaultUsers);
-          return;
+  ensureFirebaseAuth()
+    .then(() => {
+      if (cancelled) return;
+      unsubscribe = onSnapshot(
+        collection(db, 'users'),
+        async (snapshot) => {
+          if (snapshot.empty && defaultUsers.length > 0) {
+            onUsersChanged(defaultUsers);
+            await seedUsersIfEmpty(defaultUsers);
+            return;
+          }
+
+          const users: UserAccount[] = snapshot.docs.map((docSnap) =>
+            docToUserAccount(docSnap.id, docSnap.data())
+          );
+          if (users.length > 0) onUsersChanged(users);
+        },
+        (error) => {
+          console.warn('[userService] Realtime users listener error:', error?.message || error);
+          if (onError) onError(error);
         }
+      );
+    })
+    .catch((error) => {
+      console.warn('[userService] Firebase authentication is unavailable:', error?.message || error);
+      if (onError) onError(error);
+    });
 
-        const users: UserAccount[] = snapshot.docs.map((docSnap) =>
-          docToUserAccount(docSnap.id, docSnap.data())
-        );
-
-        if (users.length > 0) {
-          onUsersChanged(users);
-        }
-      },
-      (error) => {
-        console.warn('[userService] Realtime users listener error:', error?.message || error);
-        if (onError) onError(error);
-      }
-    );
-
-    return unsubscribe;
-  } catch (err) {
-    console.warn('[userService] Failed to initialize Firestore user subscription:', err);
-    return () => {};
-  }
+  return () => {
+    cancelled = true;
+    unsubscribe();
+  };
 }
 
 /**
@@ -150,6 +153,7 @@ export function subscribeToUsers(
  */
 export async function saveUserToCloud(user: UserAccount): Promise<void> {
   try {
+    await ensureFirebaseAuth();
     await withTimeout(
       setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user, false), { merge: true }),
       7000,
@@ -168,6 +172,7 @@ export async function saveUserToCloud(user: UserAccount): Promise<void> {
 export async function batchSaveUsersToCloud(usersToSave: UserAccount[]): Promise<void> {
   if (!usersToSave || usersToSave.length === 0) return;
   try {
+    await ensureFirebaseAuth();
     const batch = writeBatch(db);
     for (const user of usersToSave) {
       batch.set(doc(db, 'users', user.id), sanitizeForFirestore(user, false), { merge: true });
@@ -184,6 +189,7 @@ export async function batchSaveUsersToCloud(usersToSave: UserAccount[]): Promise
  */
 export async function updateUserInCloud(id: string, updates: Partial<UserAccount>): Promise<void> {
   try {
+    await ensureFirebaseAuth();
     await withTimeout(
       setDoc(doc(db, 'users', id), sanitizeForFirestore(updates, true), { merge: true }),
       7000,
@@ -200,6 +206,7 @@ export async function updateUserInCloud(id: string, updates: Partial<UserAccount
  */
 export async function deleteUserFromCloud(id: string): Promise<void> {
   try {
+    await ensureFirebaseAuth();
     await withTimeout(
       deleteDoc(doc(db, 'users', id)),
       7000,
@@ -218,6 +225,7 @@ export async function deleteUserFromCloud(id: string): Promise<void> {
 export async function findUserInCloud(username: string): Promise<UserAccount | null> {
   const cleanUsername = username.trim().toLowerCase();
   try {
+    await ensureFirebaseAuth();
     const q = query(collection(db, 'users'), where('username', '==', cleanUsername));
     const snap = await withTimeout(
       getDocs(q),
@@ -253,6 +261,7 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
  */
 export async function fetchAllUsersFromCloud(): Promise<UserAccount[]> {
   try {
+    await ensureFirebaseAuth();
     const snap = await withTimeout(
       getDocs(collection(db, 'users')),
       7000,
