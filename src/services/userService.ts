@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
+import { getAuth, createUserWithEmailAndPassword, setPersistence, inMemoryPersistence } from 'firebase/auth';
 import {
   collection,
   doc,
@@ -120,6 +120,7 @@ export function subscribeToUsers(
       usersCollection,
       async (snapshot) => {
         if (snapshot.empty && defaultUsers.length > 0) {
+          // If Firestore is empty, surface the default users immediately, then seed in background
           onUsersChanged(defaultUsers);
           await seedUsersIfEmpty(defaultUsers);
           return;
@@ -230,6 +231,7 @@ export async function findUserInCloud(username: string): Promise<UserAccount | n
       return docToUserAccount(docSnap.id, docSnap.data());
     }
 
+    // Fallback: check all docs in case username casing or index is pending
     const allSnap = await withTimeout(
       getDocs(collection(db, 'users')),
       5000,
@@ -277,9 +279,16 @@ export async function createAuthUserAndGetUid(email: string, password: string): 
   const secondaryAuth = getAuth(secondaryApp);
   
   try {
+    // فصل الذاكرة: نجعل التطبيق الثانوي يعمل في الذاكرة العشوائية فقط حتى لا يُنهي جلسة الأدمن
+    await setPersistence(secondaryAuth, inMemoryPersistence);
+    
+    // إنشاء الحساب
     const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, password);
     const uid = userCredential.user.uid;
+    
+    // تسجيل الخروج من التطبيق الثانوي (الآن لن يؤثر على التطبيق الأساسي)
     await secondaryAuth.signOut();
+    
     return uid;
   } catch (error: any) {
     console.error('[userService] Failed to create auth user:', error);
