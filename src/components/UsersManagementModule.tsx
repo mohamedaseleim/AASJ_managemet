@@ -11,6 +11,10 @@ import {
   XCircle,
   Search,
   Filter,
+  Cloud,
+  CloudOff,
+  RefreshCw,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { JOURNAL_SECTIONS, ROLE_INFO } from '../data/journalSections';
@@ -19,13 +23,15 @@ import { JournalDiscipline, UserAccount, UserRole } from '../types/journal';
 import { ChangePasswordModal } from './ChangePasswordModal';
 
 export const UsersManagementModule: React.FC = () => {
-  const { users, addUser, updateUser, deleteUser, currentUser } = useAuth();
+  const { users, addUser, updateUser, deleteUser, currentUser, syncStatus, refreshUsers } = useAuth();
   
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
   const [passwordChangeTarget, setPasswordChangeTarget] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Form State
   const [fullName, setFullName] = useState('');
@@ -69,51 +75,67 @@ export const UsersManagementModule: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await refreshUsers();
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !fullName.trim() || (!editingUser && !password.trim())) {
       alert('يرجى ملء جميع الحقول الإلزامية');
       return;
     }
 
-    if (editingUser) {
-      const updates: Partial<UserAccount> = {
-        fullName,
-        username: username.toLowerCase().trim(),
-        email,
-        phone,
-        title,
-        affiliation,
-        role,
-        assignedSection: role === 'executive_editor' ? assignedSection : undefined,
-        isActive,
-      };
-      if (password.trim()) {
-        updates.password = password.trim();
-      }
-      updateUser(editingUser.id, updates);
-    } else {
-      // Check duplicate username
-      if (users.some((u) => u.username.toLowerCase() === username.toLowerCase().trim())) {
-        alert('اسم المستخدم هذا مسجل مسبقاً، يرجى اختيار اسم مستخدم آخر');
-        return;
+    setIsSaving(true);
+    try {
+      if (editingUser) {
+        const updates: Partial<UserAccount> = {
+          fullName,
+          username: username.toLowerCase().trim(),
+          email,
+          phone,
+          title,
+          affiliation,
+          role,
+          assignedSection: role === 'executive_editor' ? assignedSection : undefined,
+          isActive,
+        };
+        if (password.trim()) {
+          updates.password = password.trim();
+        }
+        await updateUser(editingUser.id, updates);
+      } else {
+        // Check duplicate username
+        if (users.some((u) => u.username.toLowerCase() === username.toLowerCase().trim())) {
+          alert('اسم المستخدم هذا مسجل مسبقاً، يرجى اختيار اسم مستخدم آخر');
+          return;
+        }
+
+        await addUser({
+          fullName,
+          username: username.toLowerCase().trim(),
+          password,
+          email,
+          phone,
+          title,
+          affiliation,
+          role,
+          assignedSection: role === 'executive_editor' ? assignedSection : undefined,
+          isActive,
+        });
       }
 
-      addUser({
-        fullName,
-        username: username.toLowerCase().trim(),
-        password,
-        email,
-        phone,
-        title,
-        affiliation,
-        role,
-        assignedSection: role === 'executive_editor' ? assignedSection : undefined,
-        isActive,
-      });
+      setIsModalOpen(false);
+    } catch {
+      alert('حدث خطأ أثناء حفظ بيانات المستخدم.');
+    } finally {
+      setIsSaving(false);
     }
-
-    setIsModalOpen(false);
   };
 
   const filteredUsers = users.filter((u) => {
@@ -138,17 +160,66 @@ export const UsersManagementModule: React.FC = () => {
               إدارة حسابات المستخدمين وصلاحيات الأدوار
             </h1>
             <p className="text-xs text-slate-500 mt-1">
-              إنشاء حسابات أعضاء هيئة التحرير، وتحديد الأدوار الأكاديمية وربط المحررين التنفيذيين بالأقسام السبعة.
+              إنشاء حسابات أعضاء هيئة التحرير، وتحديد الأدوار الأكاديمية والمزامنة السحابية الفورية لكافة الأجهزة.
             </p>
           </div>
 
-          <button
-            onClick={handleOpenAdd}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs transition-colors self-start sm:self-auto"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>إنشاء حساب مستخدم جديد</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            {/* Cloud Sync Status Indicator */}
+            <div
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium ${
+                syncStatus === 'synced'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : syncStatus === 'syncing'
+                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : syncStatus === 'error'
+                  ? 'bg-rose-50 text-rose-800 border-rose-200'
+                  : 'bg-slate-50 text-slate-700 border-slate-200'
+              }`}
+              title="حالة المزامنة السحابية الفورية للحسابات بين مختلف الأجهزة والمتصفحات"
+            >
+              {syncStatus === 'syncing' ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-700" />
+              ) : syncStatus === 'synced' ? (
+                <Cloud className="w-3.5 h-3.5 text-emerald-700" />
+              ) : syncStatus === 'offline' ? (
+                <CloudOff className="w-3.5 h-3.5 text-slate-500" />
+              ) : (
+                <CloudOff className="w-3.5 h-3.5 text-rose-600" />
+              )}
+              <span>
+                {syncStatus === 'synced' && 'متزامن سحابياً (كافة الأجهزة)'}
+                {syncStatus === 'syncing' && 'جارٍ المزامنة السحابية...'}
+                {syncStatus === 'offline' && 'وضع محلي (دون اتصال)'}
+                {syncStatus === 'error' && 'تنبيه اتصال سحابي'}
+              </span>
+            </div>
+
+            <button
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="p-2 text-slate-600 hover:text-emerald-800 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+              title="مزامنة فورية وتحديث قائمة المستخدمين من السحابة الآن"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-emerald-700' : ''}`} />
+            </button>
+
+            <button
+              onClick={handleOpenAdd}
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg shadow-xs transition-colors self-start sm:self-auto cursor-pointer"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>إنشاء حساب مستخدم جديد</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Cloud sync tip banner */}
+        <div className="mt-4 p-2.5 bg-emerald-50/70 border border-emerald-100 rounded-lg flex items-center gap-2 text-xs text-emerald-900">
+          <Cloud className="w-4 h-4 text-emerald-700 shrink-0" />
+          <span>
+            <strong>المزامنة السحابية الموحدة:</strong> أي مستخدم يتم إنشاؤه، تعديله أو حذفه ينعكس مباشرة على قاعدة البيانات السحابية (Cloud Firestore)، ويمكن للمستخدم الدخول فوراً من أي جهاز أو متصفح آخر.
+          </span>
         </div>
 
         {/* Filter and Search Bar */}
@@ -268,9 +339,9 @@ export const UsersManagementModule: React.FC = () => {
                           <Edit className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => {
-                            if (window.confirm(`هل أنت متأكد من حذف الحساب "${u.username}"؟`)) {
-                              deleteUser(u.id);
+                          onClick={async () => {
+                            if (window.confirm(`هل أنت متأكد من حذف الحساب "${u.username}" نهائياً من كافة الأجهزة والسحابة؟`)) {
+                              await deleteUser(u.id);
                             }
                           }}
                           disabled={currentUser?.id === u.id}
@@ -455,16 +526,25 @@ export const UsersManagementModule: React.FC = () => {
               <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
                 <button
                   type="button"
+                  disabled={isSaving}
                   onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50"
+                  className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-emerald-800 hover:bg-emerald-900 text-white font-bold rounded-lg shadow-xs"
+                  disabled={isSaving}
+                  className="px-5 py-2 bg-emerald-800 hover:bg-emerald-900 disabled:opacity-60 text-white font-bold rounded-lg shadow-xs flex items-center gap-2 cursor-pointer"
                 >
-                  {editingUser ? 'حفظ التعديلات' : 'إنشاء وتفعيل الحساب'}
+                  {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>
+                    {isSaving
+                      ? 'جارٍ الحفظ والمزامنة السحابية...'
+                      : editingUser
+                      ? 'حفظ التعديلات السحابية'
+                      : 'إنشاء وتفعيل الحساب سحابياً'}
+                  </span>
                 </button>
               </div>
             </form>

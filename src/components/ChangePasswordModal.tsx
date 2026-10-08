@@ -67,7 +67,7 @@ export const ChangePasswordModal: React.FC<Props> = ({
 
   const strength = calculateStrength(newPassword);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
@@ -103,7 +103,7 @@ export const ChangePasswordModal: React.FC<Props> = ({
     setIsSubmitting(true);
 
     try {
-      const res = changePassword(targetAccount.id, currentPassword, newPassword);
+      const res = await changePassword(targetAccount.id, currentPassword, newPassword);
 
       if (!res.success) {
         setErrorMsg(res.message);

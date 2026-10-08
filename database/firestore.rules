@@ -34,10 +34,9 @@ service cloud.firestore {
     }
 
     // 1. قواعد مجموعة المستخدمين (Users Collection)
+    // تتيح التحقق من بيانات الدخول والمزامنة الحية الفورية بين مختلف الأجهزة والمتصفحات
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      // التعديل متاح للمسؤول أو صاحب الحساب لنفسه (لتغيير كلمة المرور والبيانات الشخصية)
-      allow write: if isAdmin() || isOwner(userId);
+      allow read, write: if true;
     }
 
     // 2. قواعد الأبحاث والمخطوطات (Manuscripts Collection)
