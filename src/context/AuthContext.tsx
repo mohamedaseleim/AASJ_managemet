@@ -337,6 +337,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err) {
       console.warn('[AuthContext] Failed to sync updated user to cloud (saved locally):', err);
       setSyncStatus('offline');
+      throw err;
     }
   };
 
