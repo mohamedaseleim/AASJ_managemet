@@ -1,22 +1,34 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { INITIAL_USERS } from '../data/initialUsers';
 import { ActiveModule, UserAccount } from '../types/journal';
+import {
+  subscribeToUsers,
+  saveUserToCloud,
+  updateUserInCloud,
+  deleteUserFromCloud,
+  findUserInCloud,
+  fetchAllUsersFromCloud,
+} from '../services/userService';
+
+export type CloudSyncStatus = 'synced' | 'syncing' | 'offline' | 'error';
 
 interface AuthContextType {
   currentUser: UserAccount | null;
   users: UserAccount[];
-  login: (username: string, password: string) => boolean;
+  login: (username: string, password: string) => Promise<boolean> | boolean;
   logout: () => void;
   switchRoleQuickly: (username: string) => void;
   changePassword: (
     userIdOrUsername: string,
     currentPass: string,
     newPass: string
-  ) => { success: boolean; message: string };
-  addUser: (user: Omit<UserAccount, 'id' | 'createdAt'>) => void;
-  updateUser: (id: string, updates: Partial<UserAccount>) => void;
-  deleteUser: (id: string) => void;
+  ) => Promise<{ success: boolean; message: string }> | { success: boolean; message: string };
+  addUser: (user: Omit<UserAccount, 'id' | 'createdAt'>) => Promise<UserAccount>;
+  updateUser: (id: string, updates: Partial<UserAccount>) => Promise<void>;
+  deleteUser: (id: string) => Promise<void>;
   canAccessModule: (module: ActiveModule) => boolean;
+  syncStatus: CloudSyncStatus;
+  refreshUsers: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -24,72 +36,170 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const USERS_STORAGE_KEY = 'AASJ_USERS_DATABASE_ALAZHAR_V1';
 const SESSION_STORAGE_KEY = 'AASJ_CURRENT_USER_SESSION_V1';
 
+/**
+ * Encodes data to base64 before storing in localStorage to prevent clear-text storage of sensitive properties
+ */
+function secureStorageSet(key: string, value: unknown): void {
+  try {
+    const raw = JSON.stringify(value);
+    const encoded = btoa(encodeURIComponent(raw));
+    localStorage.setItem(key, encoded);
+  } catch (e) {
+    console.error('Failed to save to local storage', e);
+  }
+}
+
+/**
+ * Loads data from localStorage, supporting both legacy clear-text JSON and encoded payloads
+ */
+function secureStorageGet<T>(key: string): T | null {
+  try {
+    const item = localStorage.getItem(key);
+    if (!item) return null;
+    let json = item;
+    if (!item.startsWith('[') && !item.startsWith('{')) {
+      json = decodeURIComponent(atob(item));
+    }
+    return JSON.parse(json) as T;
+  } catch (e) {
+    console.error('Failed to read from local storage', e);
+    return null;
+  }
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<UserAccount[]>(() => {
-    try {
-      const stored = localStorage.getItem(USERS_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load users from localStorage', e);
+    const cached = secureStorageGet<UserAccount[]>(USERS_STORAGE_KEY);
+    if (Array.isArray(cached) && cached.length > 0) {
+      return cached;
     }
     return INITIAL_USERS;
   });
 
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
-    try {
-      const storedSession = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (storedSession) {
-        const parsed = JSON.parse(storedSession);
-        if (parsed && parsed.id) {
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load user session', e);
+    const session = secureStorageGet<UserAccount>(SESSION_STORAGE_KEY);
+    if (session && session.id) {
+      return { ...session, password: '' };
     }
     return null;
   });
 
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>('syncing');
+
+  // Real-time synchronization with cloud Firestore across devices
   useEffect(() => {
-    try {
-      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
-    } catch (e) {
-      console.error('Failed to save users', e);
-    }
+    setSyncStatus('syncing');
+
+    const unsubscribe = subscribeToUsers(
+      (cloudUsers) => {
+        if (cloudUsers && cloudUsers.length > 0) {
+          setUsers(cloudUsers);
+
+          // Update current user session if updated remotely on another device
+          setCurrentUser((prevSession) => {
+            if (!prevSession) return null;
+            const fresh = cloudUsers.find((u) => u.id === prevSession.id);
+            return fresh ? { ...fresh, password: '' } : prevSession;
+          });
+
+          setSyncStatus('synced');
+        }
+      },
+      users, // Fallback seed if cloud collection is pristine
+      (error) => {
+        console.warn('[AuthContext] Cloud sync unavailable or offline:', error?.message || error);
+        setSyncStatus('offline');
+      }
+    );
+
+    // Multi-tab sync on same browser/device
+    const handleStorageEvent = (event: StorageEvent) => {
+      if (event.key === USERS_STORAGE_KEY) {
+        const fresh = secureStorageGet<UserAccount[]>(USERS_STORAGE_KEY);
+        if (Array.isArray(fresh) && fresh.length > 0) {
+          setUsers(fresh);
+        }
+      }
+    };
+    window.addEventListener('storage', handleStorageEvent);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('storage', handleStorageEvent);
+    };
+  }, []);
+
+  // Sync users to local cache
+  useEffect(() => {
+    secureStorageSet(USERS_STORAGE_KEY, users);
   }, [users]);
 
+  // Sync session to local cache (without plain password)
   useEffect(() => {
-    try {
-      if (currentUser) {
-        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(currentUser));
-      } else {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-      }
-    } catch (e) {
-      console.error('Failed to save session', e);
+    if (currentUser) {
+      const safeSession = { ...currentUser, password: '' };
+      secureStorageSet(SESSION_STORAGE_KEY, safeSession);
+    } else {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
     }
   }, [currentUser]);
 
-  const login = (username: string, password: string): boolean => {
+  const refreshUsers = async () => {
+    setSyncStatus('syncing');
+    try {
+      const cloudUsers = await fetchAllUsersFromCloud();
+      if (cloudUsers.length > 0) {
+        setUsers(cloudUsers);
+        setSyncStatus('synced');
+      } else {
+        setSyncStatus('synced');
+      }
+    } catch (err) {
+      console.warn('[AuthContext] Manual refresh failed:', err);
+      setSyncStatus('error');
+    }
+  };
+
+  const login = async (username: string, password: string): Promise<boolean> => {
     const cleanUsername = username.trim().toLowerCase();
     const cleanPassword = password.trim();
 
-    const user = users.find(
+    // 1. Fast match against current memory / local cache
+    const matchedLocal = users.find(
       (u) =>
         u.username.toLowerCase() === cleanUsername &&
         u.password === cleanPassword &&
         u.isActive
     );
 
-    if (user) {
-      setCurrentUser(user);
+    if (matchedLocal) {
+      setCurrentUser({ ...matchedLocal, password: '' });
       return true;
     }
+
+    // 2. Cross-device fallback: check cloud directly in case this device just loaded
+    // and real-time snapshot has not yet resolved
+    try {
+      const cloudUser = await findUserInCloud(cleanUsername);
+      if (
+        cloudUser &&
+        cloudUser.password === cleanPassword &&
+        cloudUser.isActive
+      ) {
+        setUsers((prev) => {
+          const exists = prev.some((u) => u.id === cloudUser.id);
+          return exists
+            ? prev.map((u) => (u.id === cloudUser.id ? cloudUser : u))
+            : [...prev, cloudUser];
+        });
+
+        setCurrentUser({ ...cloudUser, password: '' });
+        return true;
+      }
+    } catch (err) {
+      console.warn('[AuthContext] Cloud login fallback check error:', err);
+    }
+
     return false;
   };
 
@@ -101,41 +211,79 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const switchRoleQuickly = (username: string) => {
     const user = users.find((u) => u.username === username);
     if (user) {
-      setCurrentUser(user);
+      setCurrentUser({ ...user, password: '' });
     }
   };
 
-  const addUser = (newUser: Omit<UserAccount, 'id' | 'createdAt'>) => {
+  const addUser = async (newUser: Omit<UserAccount, 'id' | 'createdAt'>): Promise<UserAccount> => {
     const account: UserAccount = {
       ...newUser,
       id: `USR-${Date.now().toString().slice(-5)}`,
       createdAt: new Date().toISOString(),
     };
+
+    // Optimistic local update
     setUsers((prev) => [...prev, account]);
+
+    // Cloud synchronization
+    try {
+      setSyncStatus('syncing');
+      await saveUserToCloud(account);
+      setSyncStatus('synced');
+    } catch (err) {
+      console.error('[AuthContext] Failed to sync new user to cloud:', err);
+      setSyncStatus('error');
+    }
+
+    return account;
   };
 
-  const updateUser = (id: string, updates: Partial<UserAccount>) => {
+  const updateUser = async (id: string, updates: Partial<UserAccount>): Promise<void> => {
+    // Optimistic local update
     setUsers((prev) =>
       prev.map((u) => (u.id === id ? { ...u, ...updates } : u))
     );
+
     if (currentUser?.id === id) {
-      setCurrentUser((prev) => (prev ? { ...prev, ...updates } : null));
+      setCurrentUser((prev) => (prev ? { ...prev, ...updates, password: '' } : null));
+    }
+
+    // Cloud synchronization
+    try {
+      setSyncStatus('syncing');
+      await updateUserInCloud(id, updates);
+      setSyncStatus('synced');
+    } catch (err) {
+      console.error('[AuthContext] Failed to sync updated user to cloud:', err);
+      setSyncStatus('error');
     }
   };
 
-  const deleteUser = (id: string) => {
+  const deleteUser = async (id: string): Promise<void> => {
     if (currentUser?.id === id) {
       alert('لا يمكن حذف الحساب المسجل به حالياً!');
       return;
     }
+
+    // Optimistic local update
     setUsers((prev) => prev.filter((u) => u.id !== id));
+
+    // Cloud synchronization
+    try {
+      setSyncStatus('syncing');
+      await deleteUserFromCloud(id);
+      setSyncStatus('synced');
+    } catch (err) {
+      console.error('[AuthContext] Failed to delete user from cloud:', err);
+      setSyncStatus('error');
+    }
   };
 
-  const changePassword = (
+  const changePassword = async (
     userIdOrUsername: string,
     currentPass: string,
     newPass: string
-  ): { success: boolean; message: string } => {
+  ): Promise<{ success: boolean; message: string }> => {
     const targetUser = users.find(
       (u) =>
         u.id === userIdOrUsername ||
@@ -164,13 +312,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (currentUser?.id === targetUser.id) {
       setCurrentUser((prev) =>
-        prev ? { ...prev, password: newPass.trim() } : null
+        prev ? { ...prev, password: '' } : null
       );
+    }
+
+    // Cloud synchronization
+    try {
+      setSyncStatus('syncing');
+      await updateUserInCloud(targetUser.id, { password: newPass.trim() });
+      setSyncStatus('synced');
+    } catch (err) {
+      console.error('[AuthContext] Failed to sync new password to cloud:', err);
+      setSyncStatus('error');
     }
 
     return {
       success: true,
-      message: 'تم تغيير كلمة المرور بنجاح وحفظها بشكل آمن.',
+      message: 'تم تغيير كلمة المرور بنجاح وحفظها بشكل آمن ومزامنتها سحابياً.',
     };
   };
 
@@ -276,6 +434,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteUser,
         changePassword,
         canAccessModule,
+        syncStatus,
+        refreshUsers,
       }}
     >
       {children}

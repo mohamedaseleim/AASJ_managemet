@@ -30,9 +30,10 @@ export const PortalLoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<'login' | 'roles' | 'sections'>('login');
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     if (!username.trim() || !password.trim()) {
@@ -40,9 +41,16 @@ export const PortalLoginPage: React.FC = () => {
       return;
     }
 
-    const success = login(username, password);
-    if (!success) {
-      setErrorMsg('اسم المستخدم أو كلمة المرور غير صحيحة. يرجى التحقق من صحة بيانات الدخول والمحاولة مجدداً.');
+    setIsSubmitting(true);
+    try {
+      const success = await login(username, password);
+      if (!success) {
+        setErrorMsg('اسم المستخدم أو كلمة المرور غير صحيحة. يرجى التحقق من صحة بيانات الدخول والمحاولة مجدداً.');
+      }
+    } catch {
+      setErrorMsg('تعذر تسجيل الدخول، يرجى المحاولة مرة أخرى.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -232,10 +240,11 @@ export const PortalLoginPage: React.FC = () => {
 
                 <button
                   type="submit"
-                  className="w-full py-3 text-sm font-bold text-white bg-emerald-800 hover:bg-emerald-900 active:bg-emerald-950 rounded-xl shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 mt-5 cursor-pointer"
+                  disabled={isSubmitting}
+                  className="w-full py-3 text-sm font-bold text-white bg-emerald-800 hover:bg-emerald-900 active:bg-emerald-950 disabled:opacity-60 rounded-xl shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 mt-5 cursor-pointer"
                 >
                   <Lock className="w-4 h-4" />
-                  <span>تسجيل الدخول للمنظومة التحريرية</span>
+                  <span>{isSubmitting ? 'جارٍ التحقق وتأكيد الدخول عبر السحابة...' : 'تسجيل الدخول للمنظومة التحريرية'}</span>
                 </button>
               </form>
 

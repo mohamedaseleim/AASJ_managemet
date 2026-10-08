@@ -12,17 +12,25 @@ export const LoginModal: React.FC<{ isOpen: boolean; onClose?: () => void }> = (
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
-    const success = login(username, password);
-    if (success) {
-      if (onClose) onClose();
-    } else {
-      setErrorMsg('اسم المستخدم أو كلمة المرور غير صحيحة، يرجى التحقق من صحة البيانات.');
+    setIsSubmitting(true);
+    try {
+      const success = await login(username, password);
+      if (success) {
+        if (onClose) onClose();
+      } else {
+        setErrorMsg('اسم المستخدم أو كلمة المرور غير صحيحة، يرجى التحقق من صحة البيانات.');
+      }
+    } catch {
+      setErrorMsg('تعذر تسجيل الدخول، يرجى المحاولة مرة أخرى.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -113,10 +121,11 @@ export const LoginModal: React.FC<{ isOpen: boolean; onClose?: () => void }> = (
 
             <button
               type="submit"
-              className="w-full py-2.5 text-xs font-bold text-white bg-emerald-800 hover:bg-emerald-900 active:bg-emerald-950 rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 mt-4 cursor-pointer"
+              disabled={isSubmitting}
+              className="w-full py-2.5 text-xs font-bold text-white bg-emerald-800 hover:bg-emerald-900 active:bg-emerald-950 disabled:opacity-60 rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 mt-4 cursor-pointer"
             >
               <Lock className="w-3.5 h-3.5" />
-              <span>تسجيل الدخول للمنظومة</span>
+              <span>{isSubmitting ? 'جارٍ التحقق وتأكيد الدخول...' : 'تسجيل الدخول للمنظومة'}</span>
             </button>
           </form>
 
