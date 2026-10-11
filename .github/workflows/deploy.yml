@@ -51,8 +51,19 @@ jobs:
 
       # Optional: configure FIREBASE_TOKEN in repository Actions secrets to
       # publish database/firestore.rules together with the web application.
+      - name: Check Firebase deployment token
+        id: firebase-token
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          if [ -n "$FIREBASE_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy Firestore security rules
-        if: ${{ secrets.FIREBASE_TOKEN != '' }}
+        if: steps.firebase-token.outputs.configured == 'true'
         run: npx firebase-tools deploy --only firestore:rules --project aasj-azhar-journal --token "$FIREBASE_TOKEN"
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
