@@ -282,7 +282,7 @@ npx firebase-tools deploy --only firestore:rules --project aasj-azhar-journal
 ```
 أو انسخ محتويات الملف والصقها في تبويب **Rules** في Firestore Console ثم اضغط **Publish**.
 
-ولنشر القواعد تلقائياً مع GitHub Pages، أضف `FIREBASE_TOKEN` إلى **Settings -> Secrets and variables -> Actions** في GitHub. يحتوي workflow على خطوة اختيارية لنشر `database/firestore.rules`، ولا تعمل إلا عند وجود هذا السر.
+ولنشر القواعد تلقائياً مع GitHub Pages، أنشئ Google Service Account ثم أضف محتوى ملف JSON الكامل إلى GitHub secret باسم `FIREBASE_SERVICE_ACCOUNT` داخل **Settings -> Secrets and variables -> Actions**. يحتوي workflow على خطوة اختيارية لتسجيل الدخول إلى Google ونشر `database/firestore.rules`، ولا تعمل إلا عند وجود هذا السر.
 تحمي هذه القواعد بيانات الأبحاث ولا تسمح إلا للقيادات التحريرية بالاطلاع على التفاصيل السرية وتقييمات المحكمين.
 
 #### تفعيل المصادقة (Firebase Authentication):
