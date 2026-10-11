@@ -272,12 +272,17 @@ jobs:
 يوفر المشروع ملف قواعد أمان متقدم وكامل في المسار `database/firestore.rules`.
 ينتظر التطبيق تسجيل دخول Firebase مجهولاً قبل تنفيذ أي قراءة أو كتابة، لذلك يجب تفعيل مزود **Anonymous** من **Authentication -> Sign-in method**.
 
+تُحفظ الآن بيانات لوحة التحكم التحريرية وسجل المخطوطات والأبحاث في المستند السحابي:
+`journal_state/current`، ويشمل ذلك المخطوطات، قائمة الانتظار، المحكمين، المعاملات المالية، المستندات المؤرشفة، وسجل النشاطات. تتم المزامنة لحظياً بين المتصفحات، مع إبقاء `localStorage` كنسخة عمل مؤقتة عند انقطاع الشبكة.
+
 يمكن نشر القواعد مباشرة من جذر المشروع بعد تثبيت Firebase CLI وتسجيل الدخول:
 ```bash
 npx firebase-tools login
 npx firebase-tools deploy --only firestore:rules --project aasj-azhar-journal
 ```
 أو انسخ محتويات الملف والصقها في تبويب **Rules** في Firestore Console ثم اضغط **Publish**.
+
+ولنشر القواعد تلقائياً مع GitHub Pages، أضف `FIREBASE_TOKEN` إلى **Settings -> Secrets and variables -> Actions** في GitHub. يحتوي workflow على خطوة اختيارية لنشر `database/firestore.rules`، ولا تعمل إلا عند وجود هذا السر.
 تحمي هذه القواعد بيانات الأبحاث ولا تسمح إلا للقيادات التحريرية بالاطلاع على التفاصيل السرية وتقييمات المحكمين.
 
 #### تفعيل المصادقة (Firebase Authentication):

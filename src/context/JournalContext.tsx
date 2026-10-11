@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   INITIAL_CASH_FLOW,
   INITIAL_DOCUMENTS,
@@ -8,6 +8,8 @@ import {
   INITIAL_WAITING_LIST,
 } from '../data/initialData';
 import { INITIAL_ACTIVITY_LOGS } from '../data/initialActivityLogs';
+import { logActivity } from '../services/activityLogger';
+import { saveJournalState, subscribeToJournalState } from '../services/journalCloudService';
 import { Language } from '../translations';
 import { useAuth } from './AuthContext';
 import {
@@ -77,6 +79,7 @@ interface JournalContextType {
   activityLogs: ActivityLogItem[];
   addActivityLog: (log: NewLog) => void;
   clearActivityLogs: () => void;
+  cloudSyncStatus: 'syncing' | 'synced' | 'offline' | 'error';
 
   resetToDefaultData: () => void;
   exportDatabaseJson: () => void;
@@ -91,6 +94,9 @@ const ACTIVITY_LOGS_KEY = 'AASJ_ACTIVITY_LOGS_ALAZHAR_V2';
 
 export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
+  const cloudReadyRef = useRef(false);
+  const cloudSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'syncing' | 'synced' | 'offline' | 'error'>('syncing');
 
   const [language, setLanguageState] = useState<Language>(() => {
     return (localStorage.getItem(LANG_STORAGE_KEY) as Language) || 'ar';
@@ -220,6 +226,53 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return import.meta.env.DEV ? INITIAL_ACTIVITY_LOGS : [];
   });
 
+  // Firestore is the shared source of truth; LocalStorage remains the offline cache.
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = subscribeToJournalState(
+      (cloudState) => {
+        if (!active) return;
+        if (!cloudState) {
+          cloudReadyRef.current = true;
+          void saveJournalState(
+            { manuscripts, waitingList, donations, documents, reviewers, cashFlow, activityLogs },
+            currentUser?.username
+          )
+            .then(() => setCloudSyncStatus('synced'))
+            .catch((error) => {
+              console.error('[JournalContext] initial cloud upload failed:', error);
+              cloudReadyRef.current = false;
+              setCloudSyncStatus('error');
+            });
+          return;
+        }
+
+        setManuscripts(cloudState.manuscripts);
+        setWaitingList(cloudState.waitingList);
+        setDonations(cloudState.donations);
+        setDocuments(cloudState.documents);
+        setReviewers(cloudState.reviewers);
+        setCashFlow(cloudState.cashFlow);
+        setActivityLogs(cloudState.activityLogs);
+        cloudReadyRef.current = true;
+        setCloudSyncStatus('synced');
+      },
+      (error) => {
+        console.error('[JournalContext] cloud state unavailable:', error);
+        cloudReadyRef.current = false;
+        setCloudSyncStatus(typeof navigator !== 'undefined' && navigator.onLine ? 'error' : 'offline');
+      }
+    );
+
+    return () => {
+      active = false;
+      unsubscribe();
+      if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
+    };
+    // The subscription is established once; state changes are persisted below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     try {
       localStorage.setItem(ACTIVITY_LOGS_KEY, JSON.stringify(activityLogs));
@@ -239,6 +292,17 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       timestamp: new Date().toISOString(),
     };
     setActivityLogs((prev) => [newLog, ...prev]);
+    void logActivity({
+      username: newLog.username,
+      userFullName: newLog.userFullName,
+      userRole: newLog.userRole,
+      actionType: newLog.actionType,
+      title: newLog.title,
+      description: newLog.description,
+      targetId: newLog.targetId,
+      ipAddress: newLog.ipAddress,
+      severity: newLog.severity,
+    });
   };
 
   const clearActivityLogs = () => {
@@ -286,6 +350,27 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.error('Failed to auto-save to localStorage', e);
     }
   }, [manuscripts, waitingList, donations, documents, reviewers, cashFlow]);
+
+  // Persist every dashboard mutation as one atomic Firestore snapshot.
+  useEffect(() => {
+    if (!cloudReadyRef.current) return;
+    if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
+    setCloudSyncStatus('syncing');
+    cloudSaveTimerRef.current = setTimeout(() => {
+      void saveJournalState(
+        { manuscripts, waitingList, donations, documents, reviewers, cashFlow, activityLogs },
+        currentUser?.username
+      )
+        .then(() => setCloudSyncStatus('synced'))
+        .catch((error) => {
+          console.error('[JournalContext] failed to persist dashboard state:', error);
+          setCloudSyncStatus(typeof navigator !== 'undefined' && navigator.onLine ? 'error' : 'offline');
+        });
+    }, 350);
+    return () => {
+      if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current);
+    };
+  }, [manuscripts, waitingList, donations, documents, reviewers, cashFlow, activityLogs, currentUser?.username]);
 
   const addManuscript = (m: Omit<Manuscript, 'createdAt' | 'updatedAt'>) => {
     const now = new Date().toISOString();
@@ -717,6 +802,7 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
         activityLogs,
         addActivityLog,
         clearActivityLogs,
+        cloudSyncStatus,
         resetToDefaultData,
         exportDatabaseJson,
         importDatabaseJson,

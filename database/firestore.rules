@@ -40,6 +40,13 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Centralized state for the editorial dashboard, manuscript register,
+    // reviewers, finance records, archived documents, and audit log mirror.
+    // The browser signs in anonymously before accessing this document.
+    match /journal_state/{stateId} {
+      allow read, write: if isAuthenticated();
+    }
+
     // 2. قواعد الأبحاث والمخطوطات (Manuscripts Collection)
     match /manuscripts/{manuscriptId} {
       // القراءة متاحة للقيادة التحريرية، وللمحكم المكلف، وللمؤلف صاحب البحث

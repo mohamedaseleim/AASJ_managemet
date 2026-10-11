@@ -1,5 +1,5 @@
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { auth, db, ensureFirebaseAuth } from './firebase';
 import { ActivityActionType, UserRole } from '../types/journal';
 
 export type LogPayload = {
@@ -16,6 +16,7 @@ export type LogPayload = {
 
 export async function logActivity(payload: LogPayload): Promise<void> {
   try {
+    await ensureFirebaseAuth();
     await addDoc(collection(db, 'activity_logs'), {
       ...payload,
       uid: auth.currentUser?.uid ?? null,

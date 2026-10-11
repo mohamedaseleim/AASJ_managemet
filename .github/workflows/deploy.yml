@@ -48,3 +48,11 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # Optional: configure FIREBASE_TOKEN in repository Actions secrets to
+      # publish database/firestore.rules together with the web application.
+      - name: Deploy Firestore security rules
+        if: ${{ secrets.FIREBASE_TOKEN != '' }}
+        run: npx firebase-tools deploy --only firestore:rules --project aasj-azhar-journal --token "$FIREBASE_TOKEN"
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
