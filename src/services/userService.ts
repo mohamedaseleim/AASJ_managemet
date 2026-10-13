@@ -12,6 +12,14 @@ import {
   Unsubscribe,
 } from 'firebase/firestore';
 import { db, firebaseConfig, ensureFirebaseAuth } from './firebase';
+import {
+  createUserWithEmailAndPassword,
+  getAuth,
+  inMemoryPersistence,
+  setPersistence,
+  signOut,
+} from 'firebase/auth';
+import { deleteApp, initializeApp } from 'firebase/app';
 import { UserAccount } from '../types/journal';
 
 /**
@@ -153,12 +161,27 @@ export function subscribeToUsers(
  */
 export async function saveUserToCloud(user: UserAccount): Promise<void> {
   try {
-    await ensureFirebaseAuth();
     await withTimeout(
-      setDoc(doc(db, 'users', user.id), sanitizeForFirestore(user, false), { merge: true }),
-      7000,
-      `saveUserToCloud(${user.id})`
+      ensureFirebaseAuth(),
+      10000,
+      `Firebase authentication for saveUserToCloud(${user.id})`
     );
+    const payload = sanitizeForFirestore(user, false);
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        await withTimeout(
+          setDoc(doc(db, 'users', user.id), payload, { merge: true }),
+          10000,
+          `saveUserToCloud(${user.id})`
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    throw lastError;
   } catch (err: any) {
     console.error('[userService] Failed to save user to Firestore:', err?.message || err);
     throw err;
@@ -278,45 +301,33 @@ export async function fetchAllUsersFromCloud(): Promise<UserAccount[]> {
 }
 
 /**
- * الحل الجذري: إنشاء المستخدم عبر REST API لتجنب تداخل جلسات الأدمن (Auth State Bleeding).
- * هذا الكود يتصل بخوادم Google مباشرة دون التأثير على حالة تسجيل دخولك في المتصفح.
+ * إنشاء مستخدم Auth عبر تطبيق Firebase ثانوي لتجنب تداخل جلسة المدير الحالية.
  */
 export async function createAuthUserAndGetUid(email: string, password: string): Promise<string> {
-  // جلب مفتاح الـ API الخاص بمشروعك من الإعدادات المصدرة
-  const apiKey = firebaseConfig.apiKey;
-  
-  if (!apiKey) {
-    throw new Error('مفتاح API الخاص بـ Firebase غير موجود. يرجى التحقق من إعدادات firebase-applet-config.json');
-  }
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) throw new Error('يرجى إدخال البريد الإلكتروني للمستخدم');
+  if (password.length < 6) throw new Error('يجب أن تتكون كلمة المرور من 6 أحرف على الأقل');
 
+  // استخدم تطبيق Firebase ثانويًا حتى لا نبدّل جلسة المدير الحالية.
+  // هذا يتجنب مشاكل CORS وFailed to fetch الناتجة عن استدعاء REST اليدوي.
+  const secondaryApp = initializeApp(firebaseConfig, `account-creation-${Date.now()}`);
+  const secondaryAuth = getAuth(secondaryApp);
   try {
-    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        email: email,
-        password: password,
-        returnSecureToken: false
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      // معالجة الأخطاء القادمة من السيرفر (مثل البريد المكرر)
-      if (data.error && data.error.message === 'EMAIL_EXISTS') {
-        throw new Error('auth/email-already-in-use');
-      }
-      throw new Error(data.error?.message || 'فشل الاتصال بخادم المصادقة');
-    }
-
-    // إرجاع المعرف (localId أو UID) الخاص بالمستخدم الجديد
-    return data.localId;
-    
+    await setPersistence(secondaryAuth, inMemoryPersistence);
+    const credential = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, password);
+    return credential.user.uid;
   } catch (error: any) {
-    console.error('[userService] Failed to create auth user via REST API:', error);
-    throw error;
+    const code = error?.code || '';
+    if (code === 'auth/email-already-in-use') throw new Error('auth/email-already-in-use');
+    if (code === 'auth/invalid-email') throw new Error('البريد الإلكتروني غير صالح');
+    if (code === 'auth/weak-password') throw new Error('كلمة المرور ضعيفة؛ استخدم 6 أحرف على الأقل');
+    if (code === 'auth/network-request-failed') {
+      throw new Error('تعذر الاتصال بخادم المصادقة. تحقق من اتصال الإنترنت ثم أعد المحاولة');
+    }
+    console.error('[userService] Failed to create auth user:', error);
+    throw new Error(error?.message || 'فشل إنشاء الحساب في نظام المصادقة');
+  } finally {
+    await signOut(secondaryAuth).catch(() => undefined);
+    await deleteApp(secondaryApp).catch(() => undefined);
   }
 }
