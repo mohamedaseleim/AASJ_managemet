@@ -18,8 +18,13 @@ export type LogPayload = {
 export async function logActivity(payload: LogPayload): Promise<void> {
   try {
     const firebaseUser = await ensureFirebaseAuth();
+    // Firestore rejects an entire document when any field is `undefined`.
+    // Optional audit fields must therefore be omitted, not sent as undefined.
+    const definedPayload = Object.fromEntries(
+      Object.entries(payload).filter(([, value]) => value !== undefined)
+    );
     await addDoc(collection(db, 'activity_logs'), {
-      ...payload,
+      ...definedPayload,
       // uid is the Firebase technical session; actorId is the application's user account.
       uid: firebaseUser.uid,
       createdAt: serverTimestamp(),
