@@ -8,7 +8,7 @@ import {
   INITIAL_WAITING_LIST,
 } from '../data/initialData';
 import { INITIAL_ACTIVITY_LOGS } from '../data/initialActivityLogs';
-import { logActivity } from '../services/activityLogger';
+import { logActivity, subscribeToActivityLogs } from '../services/activityLogger';
 import { saveJournalState, subscribeToJournalState } from '../services/journalCloudService';
 import { Language } from '../translations';
 import { useAuth } from './AuthContext';
@@ -109,6 +109,7 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     username: currentUser?.username ?? 'anonymous',
     userFullName: currentUser?.fullName ?? 'غير معروف',
     userRole: (currentUser?.role ?? 'author') as UserRole,
+    actorId: currentUser?.id,
   });
 
   const [manuscripts, setManuscripts] = useState<Manuscript[]>(() => {
@@ -253,7 +254,6 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setDocuments(cloudState.documents);
         setReviewers(cloudState.reviewers);
         setCashFlow(cloudState.cashFlow);
-        setActivityLogs(cloudState.activityLogs);
         cloudReadyRef.current = true;
         setCloudSyncStatus('synced');
       },
@@ -271,6 +271,16 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
     // The subscription is established once; state changes are persisted below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Audit events are read from the append-only collection shared by all users.
+  // The dashboard snapshot must not overwrite another user's activity.
+  useEffect(() => {
+    const unsubscribe = subscribeToActivityLogs(
+      (cloudLogs) => setActivityLogs(cloudLogs),
+      (error) => console.error('[JournalContext] activity log stream failed:', error)
+    );
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -302,6 +312,7 @@ export const JournalProvider: React.FC<{ children: React.ReactNode }> = ({ child
       targetId: newLog.targetId,
       ipAddress: newLog.ipAddress,
       severity: newLog.severity,
+      actorId: who.actorId,
     });
   };
 

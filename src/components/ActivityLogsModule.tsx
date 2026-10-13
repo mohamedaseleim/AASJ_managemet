@@ -145,9 +145,6 @@ export const ActivityLogsModule: React.FC = () => {
   // Simulate a live activity log (for live audit verification)
   const handleSimulateLog = () => {
     addActivityLog({
-      username: 'admin',
-      userFullName: currentUser.fullName,
-      userRole: 'admin',
       actionType: 'system_backup',
       title: 'إجراء فحص أمني وتدقيق لسجلات النظام',
       description: 'تم تشغيل مراجعة السلامة الأمنية لسجلات المجلة وقاعدة البيانات.',

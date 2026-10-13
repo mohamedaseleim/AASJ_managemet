@@ -307,9 +307,6 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     // Audit log in journal system
     addActivityLog({
-      username: 'editorial_office',
-      userFullName: 'الهيئة التحريرية (نظام التنبيهات)',
-      userRole: 'editor',
       actionType: 'notification_alert',
       title: `إرسال تذكير تحكيم متأخر للمحكم: ${notification.reviewerName}`,
       description: `تم إرسال تذكير للمحكم (${notification.reviewerName}) بشأن المخطوطة [${notification.manuscriptId}] لتأخره بـ ${notification.overdueDays} يوماً عن الموعد المحدد (${notification.dueDate}). ${note ? `ملاحظة: ${note}` : ''}`,
@@ -343,9 +340,6 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     });
 
     addActivityLog({
-      username: 'editorial_office',
-      userFullName: 'الهيئة التحريرية',
-      userRole: 'editor',
       actionType: 'deadline_extended',
       title: `تمديد مهلة التحكيم للمخطوطة ${manuscriptId}`,
       description: `تم تمديد مهلة التحكيم لـ ${assignment.name} (${extraDays} أيام إضافية) حتى ${newDueDate}.`,

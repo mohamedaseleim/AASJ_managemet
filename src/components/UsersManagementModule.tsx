@@ -17,6 +17,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useJournal } from '../context/JournalContext';
 import { JOURNAL_SECTIONS, ROLE_INFO } from '../data/journalSections';
 import { DISCIPLINE_TRANSLATIONS } from '../translations';
 import { JournalDiscipline, UserAccount, UserRole } from '../types/journal';
@@ -32,6 +33,7 @@ import {
 
 export const UsersManagementModule: React.FC = () => {
   const { currentUser } = useAuth();
+  const { addActivityLog } = useJournal();
   
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [isLocalMode, setIsLocalMode] = useState(false);
@@ -186,6 +188,13 @@ export const UsersManagementModule: React.FC = () => {
         await saveUserToCloud(newUser);
       }
 
+      addActivityLog({
+        actionType: 'user_management',
+        title: `${editingUser ? 'تعديل' : 'إنشاء'} حساب المستخدم @${cleanUsername}`,
+        description: `${editingUser ? 'تم تعديل' : 'تم إنشاء'} حساب المستخدم ${cleanFullName} بواسطة الحساب المنفذ الحالي.`,
+        targetId: editingUser?.id,
+        severity: 'success',
+      });
       setIsModalOpen(false);
       setEditingUser(null);
     } catch (err: any) {
@@ -390,6 +399,13 @@ export const UsersManagementModule: React.FC = () => {
                               if (window.confirm(`هل أنت متأكد من حذف الحساب "${u.username}" نهائياً من كافة الأجهزة والسحابة؟`)) {
                                 try {
                                   await deleteUserFromCloud(u.id);
+                                  addActivityLog({
+                                    actionType: 'user_management',
+                                    title: `حذف حساب المستخدم @${u.username}`,
+                                    description: `تم حذف حساب المستخدم ${u.fullName} بواسطة الحساب المنفذ الحالي.`,
+                                    targetId: u.id,
+                                    severity: 'danger',
+                                  });
                                 } catch (err) {
                                   console.error('Delete error', err);
                                   alert('حدث خطأ أثناء الحذف من السحابة.');
